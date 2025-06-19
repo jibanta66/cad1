@@ -1,0 +1,425 @@
+import React, { useState, useCallback } from 'react';
+import { Viewport3D } from './components/Viewport3D';
+import { Toolbar } from './components/Toolbar';
+import { FileImport } from './components/FileImport';
+import { PropertiesPanel } from './components/PropertiesPanel';
+import { SceneHierarchy } from './components/SceneHierarchy';
+import { SketchPanel } from './components/SketchPanel';
+import { LightingPanel } from './components/LightingPanel';
+import { GridPanel } from './components/GridPanel';
+import { MeasurementPanel } from './components/MeasurementPanel';
+import { ContextToolbar } from './components/ContextToolbar';
+import { KeyboardShortcuts } from './components/KeyboardShortcuts';
+import { RenderObject, LightSettings, GridSettings } from './three/ThreeRenderer';
+import { createCubeGeometry, createSphereGeometry, createCylinderGeometry } from './three/primitives';
+import { ExtrusionEngine } from './three/extrusion';
+import { OffsetEngine } from './three/OffsetEngine';
+import { SketchShape } from './utils/sketch';
+import { MeasurementEngine, Measurement } from './utils/measurement';
+import { ImportedFile } from './utils/FileLoader';
+import { Vec3 } from './utils/math';
+import { Save, Download, Settings, Upload } from 'lucide-react'; // ✅ Added Upload icon
+import * as THREE from 'three';
+
+function App() {
+  const [objects, setObjects] = useState<RenderObject[]>([]);
+  const [selectedObjectId, setSelectedObjectId] = useState<string | null>(null);
+  const [activeTool, setActiveTool] = useState('select');
+  const [transformMode, setTransformMode] = useState<'translate' | 'rotate' | 'scale'>('translate');
+
+  const [sketchPanelOpen, setSketchPanelOpen] = useState(false);
+  const [fileImportOpen, setFileImportOpen] = useState(false);
+  const [lightingPanelOpen, setLightingPanelOpen] = useState(false);
+  const [gridPanelOpen, setGridPanelOpen] = useState(false);
+  const [measurementPanelOpen, setMeasurementPanelOpen] = useState(false);
+
+  const [measurementEngine] = useState(() => new MeasurementEngine());
+  const [measurements, setMeasurements] = useState<Measurement[]>([]);
+
+  const [lightSettings, setLightSettings] = useState<LightSettings>({
+    ambient: { intensity: 0.2, color: [1, 1, 1] },
+    directional: { intensity: 0.8, color: [1, 1, 1], position: [10, 10, 10] },
+    point: { intensity: 0.5, color: [1, 1, 1], position: [5, 5, 5] }
+  });
+
+  const [gridSettings, setGridSettings] = useState<GridSettings>({
+    size: 10,
+    divisions: 20,
+    opacity: 0.3,
+    visible: true,
+    snapEnabled: true,
+    color: new Vec3(0.5, 0.5, 0.5)
+  });
+
+  const generateId = (type: string): string => `${type}-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`;
+
+  const getRandomColor = (): Vec3 =>
+    new Vec3(0.3 + Math.random() * 0.7, 0.3 + Math.random() * 0.7, 0.3 + Math.random() * 0.7);
+
+  const addPrimitive = useCallback((type: string) => {
+    let geometry: THREE.BufferGeometry;
+    if (type === 'cube') geometry = createCubeGeometry(2);
+    else if (type === 'sphere') geometry = createSphereGeometry(1, 32);
+    else if (type === 'cylinder') geometry = createCylinderGeometry(1, 2, 32);
+    else return;
+
+    const color = getRandomColor();
+    const material = new THREE.MeshPhongMaterial({ color: new THREE.Color(color.x, color.y, color.z) });
+    const mesh = new THREE.Mesh(geometry, material);
+
+    const newObject: RenderObject = {
+      id: generateId(type),
+      mesh,
+      position: new Vec3(0, 0, 0),
+      rotation: new Vec3(0, 0, 0),
+      scale: new Vec3(1, 1, 1),
+      color,
+      selected: false,
+      visible: true
+    };
+
+    setObjects(prev => [...prev, newObject]);
+    setSelectedObjectId(newObject.id);
+  }, []);
+
+  const handleFilesImported = useCallback((importedFiles: ImportedFile[]) => {
+    const newObjects: RenderObject[] = [];
+
+    importedFiles.forEach((file, index) => {
+      const color = getRandomColor();
+      const material = file.material || new THREE.MeshPhongMaterial({
+        color: new THREE.Color(color.x, color.y, color.z),
+        side: THREE.DoubleSide
+      });
+      const mesh = new THREE.Mesh(file.geometry, material);
+
+      const gridSize = Math.ceil(Math.sqrt(importedFiles.length));
+      const x = (index % gridSize) * 3 - (gridSize - 1) * 1.5;
+      const z = Math.floor(index / gridSize) * 3 - (Math.floor((importedFiles.length - 1) / gridSize)) * 1.5;
+
+      const newObject: RenderObject = {
+        id: generateId('imported'),
+        mesh,
+        position: new Vec3(x, 0, z),
+        rotation: new Vec3(0, 0, 0),
+        scale: new Vec3(1, 1, 1),
+        color,
+        selected: false,
+        visible: true
+      };
+
+      newObjects.push(newObject);
+    });
+
+    setObjects(prev => [...prev, ...newObjects]);
+
+    if (newObjects.length > 0) {
+      setSelectedObjectId(newObjects[0].id);
+    }
+
+    setFileImportOpen(false);
+  }, []);
+
+  const handleSketchExtrude = useCallback((shapes: SketchShape[]) => {
+    const geometry = ExtrusionEngine.extrudeSketch(shapes, {
+      depth: 2,
+      bevelEnabled: true,
+      bevelThickness: 0.1,
+      bevelSize: 0.1,
+      bevelSegments: 3
+    });
+    const color = getRandomColor();
+    const material = new THREE.MeshPhongMaterial({ color: new THREE.Color(color.x, color.y, color.z) });
+    const mesh = new THREE.Mesh(geometry, material);
+
+    const newObject: RenderObject = {
+      id: generateId('extruded'),
+      mesh,
+      position: new Vec3(0, 0, 0),
+      rotation: new Vec3(0, 0, 0),
+      scale: new Vec3(1, 1, 1),
+      color,
+      selected: false,
+      visible: true
+    };
+
+    setObjects(prev => [...prev, newObject]);
+    setSelectedObjectId(newObject.id);
+  }, []);
+
+  const deleteSelected = useCallback(() => {
+    if (selectedObjectId) {
+      setObjects(prev => prev.filter(obj => obj.id !== selectedObjectId));
+      setSelectedObjectId(null);
+    }
+  }, [selectedObjectId]);
+
+  const duplicateSelected = useCallback(() => {
+    const selectedObj = objects.find(obj => obj.id === selectedObjectId);
+    if (!selectedObj) return;
+
+    const newId = generateId(selectedObj.id.split('-')[0]);
+    const newGeometry = selectedObj.mesh.geometry.clone();
+    const newMaterial = (selectedObj.mesh.material as THREE.Material).clone();
+    const newMesh = new THREE.Mesh(newGeometry, newMaterial);
+
+    const newObject: RenderObject = {
+      id: newId,
+      mesh: newMesh,
+      position: new Vec3(selectedObj.position.x + 1, selectedObj.position.y, selectedObj.position.z + 1),
+      rotation: selectedObj.rotation,
+      scale: selectedObj.scale,
+      color: selectedObj.color,
+      selected: false,
+      visible: true
+    };
+
+    setObjects(prev => [...prev, newObject]);
+    setSelectedObjectId(newId);
+  }, [selectedObjectId, objects]);
+
+  const toggleSelectedVisibility = useCallback(() => {
+    if (!selectedObjectId) return;
+    setObjects(prev => prev.map(obj => obj.id === selectedObjectId ? { ...obj, visible: !obj.visible } : obj));
+  }, [selectedObjectId]);
+
+  const handleOffsetFace = useCallback(() => {
+    const selectedObj = objects.find(obj => obj.id === selectedObjectId);
+    if (!selectedObj) return;
+    const newGeometry = OffsetEngine.offsetFace(selectedObj.mesh.geometry, 0, 0.2);
+    selectedObj.mesh.geometry.dispose();
+    selectedObj.mesh.geometry = newGeometry;
+    setObjects(prev => [...prev]);
+  }, [selectedObjectId, objects]);
+
+  const handleOffsetBody = useCallback(() => {
+    const selectedObj = objects.find(obj => obj.id === selectedObjectId);
+    if (!selectedObj) return;
+    const newGeometry = OffsetEngine.offsetBody(selectedObj.mesh.geometry, 0.1);
+    selectedObj.mesh.geometry.dispose();
+    selectedObj.mesh.geometry = newGeometry;
+    setObjects(prev => [...prev]);
+  }, [selectedObjectId, objects]);
+
+  const handleMirror = useCallback((axis: 'x' | 'y' | 'z') => {
+    if (!selectedObjectId) return;
+    setObjects(prev => prev.map(obj =>
+      obj.id === selectedObjectId ? { ...obj, scale: { ...obj.scale, [axis]: obj.scale[axis] * -1 } } : obj
+    ));
+  }, [selectedObjectId]);
+
+  const handleResetTransform = useCallback(() => {
+    if (!selectedObjectId) return;
+    setObjects(prev => prev.map(obj =>
+      obj.id === selectedObjectId
+        ? { ...obj, position: new Vec3(0, 0, 0), rotation: new Vec3(0, 0, 0), scale: new Vec3(1, 1, 1) }
+        : obj
+    ));
+  }, [selectedObjectId]);
+
+  const updateObject = useCallback((id: string, updates: Partial<RenderObject>) => {
+    setObjects(prev => prev.map(obj => obj.id === id ? { ...obj, ...updates } : obj));
+  }, []);
+
+  const handleObjectTransform = useCallback((id: string, transform: Partial<RenderObject>) => {
+    updateObject(id, transform);
+  }, [updateObject]);
+
+  const selectObject = useCallback((id: string | null) => setSelectedObjectId(id), []);
+  const handleObjectVisibilityToggle = useCallback((id: string) => {
+    setObjects(prev => prev.map(obj => obj.id === id ? { ...obj, visible: !obj.visible } : obj));
+  }, []);
+  const handleMeasurementToolChange = useCallback((tool: string | null) => measurementEngine.setActiveTool(tool), [measurementEngine]);
+  const handleMeasurementPoint = useCallback((point: Vec3) => {
+    const measurement = measurementEngine.addPoint(point);
+    if (measurement) setMeasurements(measurementEngine.getMeasurements());
+  }, [measurementEngine]);
+  const handleDeleteMeasurement = useCallback((id: string) => {
+    measurementEngine.deleteMeasurement(id);
+    setMeasurements(measurementEngine.getMeasurements());
+  }, [measurementEngine]);
+  const handleClearMeasurements = useCallback(() => {
+    measurementEngine.clearAll();
+    setMeasurements([]);
+  }, [measurementEngine]);
+
+  const selectedObject = selectedObjectId ? objects.find(obj => obj.id === selectedObjectId) || null : null;
+
+  const exportScene = useCallback(() => {
+    const sceneData = {
+      objects: objects.map(obj => ({
+        id: obj.id,
+        type: obj.id.split('-')[0],
+        position: obj.position,
+        rotation: obj.rotation,
+        scale: obj.scale,
+        color: obj.color,
+        visible: obj.visible
+      })),
+      lighting: lightSettings,
+      grid: gridSettings,
+      measurements,
+      metadata: {
+        exportedAt: new Date().toISOString(),
+        version: '3.0',
+        renderer: 'Three.js'
+      }
+    };
+
+    const blob = new Blob([JSON.stringify(sceneData, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'threejs-cad-scene.json';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, [objects, lightSettings, gridSettings, measurements]);
+
+  return (
+    <div className="min-h-screen flex flex-col bg-gray-900 text-white overflow-y-auto">
+      <KeyboardShortcuts
+        onTransformModeChange={setTransformMode}
+        onDuplicate={duplicateSelected}
+        onDelete={deleteSelected}
+        onSelectAll={() => objects.length > 0 && setSelectedObjectId(objects[0].id)}
+        onDeselect={() => setSelectedObjectId(null)}
+        selectedObjectId={selectedObjectId}
+      />
+
+      <header className="bg-gray-800 border-b border-gray-700 px-6 py-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            <h1 className="text-xl font-bold bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent">
+              WebGL CAD Studio Pro
+            </h1>
+            <div className="text-sm text-gray-400">Professional 3D modeling powered by Three.js</div>
+            <div className="flex items-center gap-2 px-3 py-1 bg-green-900 bg-opacity-50 rounded-full">
+              <div className="w-2 h-2 bg-green-400 rounded-full" />
+              <span className="text-xs text-green-300">Three.js Renderer</span>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setFileImportOpen(true)}
+              className="flex items-center gap-2 px-3 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors text-sm"
+            >
+              <Upload size={16} /> Import 3D File
+            </button>
+            <button onClick={exportScene} className="flex items-center gap-2 px-3 py-2 bg-green-600 hover:bg-green-700 rounded-lg transition-colors text-sm">
+              <Download size={16} /> Export Scene
+            </button>
+            <button className="flex items-center gap-2 px-3 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg transition-colors text-sm">
+              <Save size={16} /> Save Project
+            </button>
+            <button className="flex items-center gap-2 px-3 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg transition-colors text-sm">
+              <Settings size={16} /> Settings
+            </button>
+          </div>
+        </div>
+      </header>
+
+      <div className="flex-1 flex overflow-hidden">
+        <div className="w-64 border-r border-gray-700 bg-gray-800">
+          <Toolbar
+            activeTool={activeTool}
+            onToolChange={setActiveTool}
+            onAddPrimitive={addPrimitive}
+            onDeleteSelected={deleteSelected}
+            onOpenSketch={() => setSketchPanelOpen(true)}
+            onOpenImport={() => setFileImportOpen(true)}
+            onToggleMeasurement={() => setMeasurementPanelOpen(!measurementPanelOpen)}
+            onToggleLighting={() => setLightingPanelOpen(!lightingPanelOpen)}
+            onToggleGrid={() => setGridPanelOpen(!gridPanelOpen)}
+            hasSelection={selectedObjectId !== null}
+            measurementActive={measurementPanelOpen}
+            lightingPanelOpen={lightingPanelOpen}
+            gridPanelOpen={gridPanelOpen}
+          />
+        </div>
+
+        <div className="flex-1 relative">
+          <Viewport3D
+            objects={objects}
+            selectedObjectId={selectedObjectId}
+            onObjectSelect={selectObject}
+            lightSettings={lightSettings}
+            gridSettings={gridSettings}
+            onMeasurementPoint={handleMeasurementPoint}
+            measurementActive={measurementEngine.getActiveTool() !== null}
+            transformMode={transformMode}
+            onSetTransformMode={setTransformMode}
+            onObjectTransform={handleObjectTransform}
+          />
+        </div>
+
+        <div className="w-80 border-l border-gray-700 flex flex-col overflow-y-auto">
+          {measurementPanelOpen && (
+            <div className="h-1/2 border-b border-gray-700">
+              <MeasurementPanel
+                measurements={measurements}
+                activeTool={measurementEngine.getActiveTool()}
+                onToolChange={handleMeasurementToolChange}
+                onDeleteMeasurement={handleDeleteMeasurement}
+                onClearAll={handleClearMeasurements}
+                tempPoints={measurementEngine.getTempPoints().length}
+              />
+            </div>
+          )}
+          {lightingPanelOpen && (
+            <div className="h-1/2 border-b border-gray-700">
+              <LightingPanel settings={lightSettings} onSettingsChange={setLightSettings} />
+            </div>
+          )}
+          {gridPanelOpen && (
+            <div className="h-1/2 border-b border-gray-700">
+              <GridPanel settings={gridSettings} onSettingsChange={setGridSettings} />
+            </div>
+          )}
+          <div className="h-1/2 border-b border-gray-700">
+            <SceneHierarchy
+              objects={objects}
+              selectedObjectId={selectedObjectId}
+              onObjectSelect={selectObject}
+              onObjectVisibilityToggle={handleObjectVisibilityToggle}
+            />
+          </div>
+          <div className="h-1/2">
+            <PropertiesPanel selectedObject={selectedObject} onObjectUpdate={updateObject} />
+          </div>
+        </div>
+      </div>
+
+      <ContextToolbar
+        selectedObjectId={selectedObjectId}
+        transformMode={transformMode}
+        onTransformModeChange={setTransformMode}
+        onDuplicate={duplicateSelected}
+        onDelete={deleteSelected}
+        onToggleVisibility={toggleSelectedVisibility}
+        onOffsetFace={handleOffsetFace}
+        onOffsetBody={handleOffsetBody}
+        onMirrorX={() => handleMirror('x')}
+        onMirrorY={() => handleMirror('y')}
+        onMirrorZ={() => handleMirror('z')}
+        onResetTransform={handleResetTransform}
+        isVisible={selectedObject ? selectedObject.visible : false}
+        />
+  <FileImport
+  isOpen={fileImportOpen}
+  onClose={() => setFileImportOpen(false)}
+  onFilesImported={handleFilesImported}
+/>
+  
+  <FileImport
+  isOpen={fileImportOpen}
+  onClose={() => setFileImportOpen(false)}
+  onFilesImported={handleFilesImported}
+/>
+      </div>
+    );
+  }
+  
+  export default App;
+  
