@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useMemo } from 'react';
+import React, { useState, useCallback, useMemo, useRef, useEffect } from 'react'; // Import useRef and useEffect
 import { Viewport3D } from './components/Viewport3D';
 import { Toolbar } from './components/Toolbar';
 import { PropertiesPanel } from './components/PropertiesPanel';
@@ -16,16 +16,16 @@ import { OffsetEngine } from './three/OffsetEngine';
 import { SketchShape3D } from './utils/sketch3d';
 import { MeasurementEngine, Measurement } from './utils/measurement';
 import { Vec3 } from './utils/math';
-import { Save, Download, Settings, Layers ,Upload } from 'lucide-react';
+import { Save, Download, Settings, Layers, Upload } from 'lucide-react';
 import * as THREE from 'three';
-import { FileImport } from './components/FileImport';
+import { FileImport, ImportedFile } from './components/FileImport'; // Assuming ImportedFile type is here
 
 function App() {
   const [objects, setObjects] = useState<RenderObject[]>([]);
   const [selectedObjectId, setSelectedObjectId] = useState<string | null>(null);
   const [activeTool, setActiveTool] = useState('select');
   const [transformMode, setTransformMode] = useState<'translate' | 'rotate' | 'scale'>('translate');
-  
+
   // Panel states
   const [sketchPanelOpen, setSketchPanelOpen] = useState(false);
   const [fileImportOpen, setFileImportOpen] = useState(false);
@@ -68,6 +68,39 @@ function App() {
   // Sketch engine reference
   const [sketchEngineRef, setSketchEngineRef] = useState<any>(null);
 
+  // Resizable sidebar widths
+  const [leftSidebarWidth, setLeftSidebarWidth] = useState(256); // Initial width for w-64
+  const [rightSidebarWidth, setRightSidebarWidth] = useState(320); // Initial width for w-80
+
+  // State and Ref for Viewport dimensions
+  const viewportRef = useRef<HTMLDivElement>(null);
+  const [viewportDimensions, setViewportDimensions] = useState({ width: 0, height: 0 });
+
+  // Effect to observe viewport dimensions
+  useEffect(() => {
+    if (viewportRef.current) {
+      const observer = new ResizeObserver(entries => {
+        for (let entry of entries) {
+          if (entry.contentBoxSize) { // Standard way to get dimensions
+            const { width, height } = entry.contentRect; // Use contentRect for actual content dimensions
+            setViewportDimensions({ width, height });
+          }
+        }
+      });
+
+      observer.observe(viewportRef.current);
+
+      // Initial dimensions on mount
+      setViewportDimensions({
+        width: viewportRef.current.offsetWidth,
+        height: viewportRef.current.offsetHeight
+      });
+
+      return () => observer.disconnect();
+    }
+  }, [leftSidebarWidth, rightSidebarWidth]); // Re-run effect if sidebar widths change, to ensure initial correct value
+
+
   const generateId = (type: string): string => {
     const timestamp = Date.now();
     const random = Math.random().toString(36).substr(2, 5);
@@ -84,7 +117,7 @@ function App() {
 
   const addPrimitive = useCallback((type: string) => {
     let geometry: THREE.BufferGeometry;
-    
+
     switch (type) {
       case 'cube':
         geometry = createCubeGeometry(2);
@@ -120,6 +153,7 @@ function App() {
     setObjects(prev => [...prev, newObject]);
     setSelectedObjectId(newObject.id);
   }, []);
+
   const handleFilesImported = useCallback((importedFiles: ImportedFile[]) => {
     const newObjects: RenderObject[] = [];
 
@@ -160,7 +194,7 @@ function App() {
 
   const handleSketchExtrude = useCallback((shapes: SketchShape3D[]) => {
     console.log('Extrude called with shapes:', shapes);
-    
+
     if (shapes.length === 0) {
       console.warn('No shapes to extrude');
       return;
@@ -175,7 +209,6 @@ function App() {
     };
 
     try {
-      // Use the shapes directly - no conversion needed
       const geometry = ExtrusionEngine.extrudeSketch(shapes, extrusionSettings);
       const color = getRandomColor();
       const material = new THREE.MeshPhongMaterial({
@@ -183,7 +216,7 @@ function App() {
       });
 
       const mesh = new THREE.Mesh(geometry, material);
-      
+
       const newObject: RenderObject = {
         id: generateId('extruded'),
         mesh,
@@ -199,12 +232,11 @@ function App() {
       setSelectedObjectId(newObject.id);
       setSketchMode(false);
       setSketchPanelOpen(false);
-      
-      // Clear sketch after successful extrusion
+
       if (sketchEngineRef) {
         sketchEngineRef.clear();
       }
-      
+
       console.log('Extrusion successful, object created:', newObject.id);
     } catch (error) {
       console.error('Failed to extrude sketch:', error);
@@ -247,8 +279,8 @@ function App() {
   const toggleSelectedVisibility = useCallback(() => {
     if (!selectedObjectId) return;
 
-    setObjects(prev => prev.map(obj => 
-      obj.id === selectedObjectId 
+    setObjects(prev => prev.map(obj =>
+      obj.id === selectedObjectId
         ? { ...obj, visible: !obj.visible }
         : obj
     ));
@@ -256,15 +288,15 @@ function App() {
 
   const handleOffsetFace = useCallback(() => {
     if (!selectedObjectId) return;
-    
+
     setObjects(prev => prev.map(obj => {
       if (obj.id === selectedObjectId) {
         // Dispose old geometry to free up memory
-        obj.mesh.geometry.dispose(); 
-        
+        obj.mesh.geometry.dispose();
+
         // Create new geometry
         const newGeometry = OffsetEngine.offsetFace(obj.mesh.geometry, 0, 0.2);
-        
+
         // Create a new mesh instance with the updated geometry
         const newMesh = new THREE.Mesh(newGeometry, obj.mesh.material);
         newMesh.castShadow = true;
@@ -279,7 +311,7 @@ function App() {
 
   const handleOffsetBody = useCallback(() => {
     if (!selectedObjectId) return;
-    
+
     setObjects(prev => prev.map(obj => {
       if (obj.id === selectedObjectId) {
         // Dispose old geometry to free up memory
@@ -293,7 +325,7 @@ function App() {
         newMesh.castShadow = true;
         newMesh.receiveShadow = true;
         newMesh.userData = { id: obj.id }; // Preserve user data
-        
+
         return { ...obj, mesh: newMesh }; // Return new object with updated mesh
       }
       return obj;
@@ -316,14 +348,14 @@ function App() {
   const handleResetTransform = useCallback(() => {
     if (!selectedObjectId) return;
 
-    setObjects(prev => prev.map(obj => 
-      obj.id === selectedObjectId 
-        ? { 
-            ...obj, 
-            position: new Vec3(0, 0, 0),
-            rotation: new Vec3(0, 0, 0),
-            scale: new Vec3(1, 1, 1)
-          }
+    setObjects(prev => prev.map(obj =>
+      obj.id === selectedObjectId
+        ? {
+          ...obj,
+          position: new Vec3(0, 0, 0),
+          rotation: new Vec3(0, 0, 0),
+          scale: new Vec3(1, 1, 1)
+        }
         : obj
     ));
   }, [selectedObjectId]);
@@ -339,7 +371,7 @@ function App() {
   }, []);
 
   const updateObject = useCallback((id: string, updates: Partial<RenderObject>) => {
-    setObjects(prev => prev.map(obj => 
+    setObjects(prev => prev.map(obj =>
       obj.id === id ? { ...obj, ...updates } : obj
     ));
   }, []);
@@ -353,7 +385,7 @@ function App() {
   }, []);
 
   const handleObjectVisibilityToggle = useCallback((id: string) => {
-    setObjects(prev => prev.map(obj => 
+    setObjects(prev => prev.map(obj =>
       obj.id === id ? { ...obj, visible: !obj.visible } : obj
     ));
   }, []);
@@ -408,14 +440,14 @@ function App() {
     }
     if (settings.finishSketch && sketchEngineRef) {
       sketchEngineRef.finishSketch();
-    
+
       if (sketchEngineRef.getShapes) {
         const newShapes = sketchEngineRef.getShapes();
         setSketchShapes(newShapes);
         console.log('Updated sketch shapes:', newShapes);
       }
     }
-    
+
     if (settings.getShapes) {
       // Store reference to sketch engine methods
       setSketchEngineRef({
@@ -427,7 +459,7 @@ function App() {
   }, [sketchEngineRef]);
 
   // Memoize selectedObject lookup to prevent unnecessary re-calculations
-  const selectedObject = useMemo(() => 
+  const selectedObject = useMemo(() =>
     selectedObjectId ? objects.find(obj => obj.id === selectedObjectId) || null : null,
     [selectedObjectId, objects]
   );
@@ -464,8 +496,44 @@ function App() {
     URL.revokeObjectURL(url);
   }, [objects, lightSettings, gridSettings, measurements]);
 
+  // Handlers for resizing
+  const handleMouseDownLeft = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    document.addEventListener('mousemove', handleMouseMoveLeft);
+    document.addEventListener('mouseup', handleMouseUpLeft);
+  }, []);
+
+  const handleMouseMoveLeft = useCallback((e: MouseEvent) => {
+    const newWidth = e.clientX;
+    // Set a minimum width (e.g., 200px) and a maximum width (e.g., 400px, or based on viewport)
+    setLeftSidebarWidth(Math.max(200, Math.min(400, newWidth)));
+  }, []);
+
+  const handleMouseUpLeft = useCallback(() => {
+    document.removeEventListener('mousemove', handleMouseMoveLeft);
+    document.removeEventListener('mouseup', handleMouseUpLeft);
+  }, []);
+
+  const handleMouseDownRight = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    document.addEventListener('mousemove', handleMouseMoveRight);
+    document.addEventListener('mouseup', handleMouseUpRight);
+  }, []);
+
+  const handleMouseMoveRight = useCallback((e: MouseEvent) => {
+    // Calculate new width relative to the right edge of the viewport
+    const newWidth = window.innerWidth - e.clientX;
+    // Set a minimum and maximum width
+    setRightSidebarWidth(Math.max(200, Math.min(400, newWidth)));
+  }, []);
+
+  const handleMouseUpRight = useCallback(() => {
+    document.removeEventListener('mousemove', handleMouseMoveRight);
+    document.removeEventListener('mouseup', handleMouseUpRight);
+  }, []);
+
   return (
-    <div className="min-h-screen overflow-y-auto bg-gray-900 text-white">
+    <div className="min-h-screen overflow-y-auto bg-gray-900 text-white flex flex-col">
       {/* Keyboard Shortcuts Handler */}
       <KeyboardShortcuts
         onTransformModeChange={setTransformMode}
@@ -497,15 +565,15 @@ function App() {
               </div>
             )}
           </div>
-          
+
           <div className="flex items-center gap-2">
-          <button
+            <button
               onClick={() => setFileImportOpen(true)}
               className="flex items-center gap-2 px-3 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors text-sm"
             >
               <Upload size={16} /> Import 3D File
             </button>
-            <button 
+            <button
               onClick={exportScene}
               className="flex items-center gap-2 px-3 py-2 bg-green-600 hover:bg-green-700 rounded-lg transition-colors text-sm"
             >
@@ -524,10 +592,13 @@ function App() {
         </div>
       </header>
 
-      {/* Main content */}
-      <div className="flex-1 flex overflow-hidden">
+      {/* Main content area: Left Sidebar, Viewport, Right Sidebar */}
+      <div className="flex flex-1 overflow-hidden">
         {/* Left sidebar - Tools */}
-        <div className="w-64 border-r border-gray-700 bg-gray-800">
+        <div
+          className="border-r border-gray-700 bg-gray-800 flex-shrink-0"
+          style={{ width: leftSidebarWidth }}
+        >
           <Toolbar
             activeTool={activeTool}
             onToolChange={setActiveTool}
@@ -546,8 +617,14 @@ function App() {
           />
         </div>
 
+        {/* Left Resizer */}
+        <div
+          className="w-2 bg-gray-700 cursor-ew-resize hover:bg-gray-600 flex-shrink-0"
+          onMouseDown={handleMouseDownLeft}
+        />
+
         {/* Center - 3D Viewport */}
-        <div className="flex-1 relative">
+        <div ref={viewportRef} className="flex-1 relative"> {/* Add ref here */}
           <Viewport3D
             objects={objects}
             selectedObjectId={selectedObjectId}
@@ -564,11 +641,23 @@ function App() {
             sketchModeType={sketchModeType}
             sketchSettings={sketchSettings}
             onSketchSettingsChange={handleSketchSettingsChange}
+            // Pass the dimensions to Viewport3D
+            viewportWidth={viewportDimensions.width}
+            viewportHeight={viewportDimensions.height}
           />
         </div>
 
+        {/* Right Resizer */}
+        <div
+          className="w-2 bg-gray-700 cursor-ew-resize hover:bg-gray-600 flex-shrink-0"
+          onMouseDown={handleMouseDownRight}
+        />
+
         {/* Right sidebar - Properties and Panels */}
-        <div className="w-80 border-l border-gray-700 flex flex-col">
+        <div
+          className="border-l border-gray-700 flex flex-col flex-shrink-0"
+          style={{ width: rightSidebarWidth }}
+        >
           {/* Dynamic panel based on active tool */}
           {measurementPanelOpen && (
             <div className="h-1/2 border-b border-gray-700">
@@ -610,7 +699,7 @@ function App() {
               onObjectVisibilityToggle={handleObjectVisibilityToggle}
             />
           </div>
-          
+
           {/* Properties Panel */}
           <div className={`${measurementPanelOpen || lightingPanelOpen || gridPanelOpen ? 'h-1/2' : 'h-1/2'}`}>
             <PropertiesPanel
@@ -622,10 +711,10 @@ function App() {
       </div>
 
       <FileImport
-  isOpen={fileImportOpen}
-  onClose={() => setFileImportOpen(false)}
-  onFilesImported={handleFilesImported}
-/>
+        isOpen={fileImportOpen}
+        onClose={() => setFileImportOpen(false)}
+        onFilesImported={handleFilesImported}
+      />
       {/* Context Toolbar */}
       {!sketchMode && (
         <ContextToolbar
