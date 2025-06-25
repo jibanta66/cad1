@@ -17,6 +17,7 @@ interface ToolbarProps {
   measurementActive: boolean;
   lightingPanelOpen: boolean;
   gridPanelOpen: boolean;
+  sketchMode: boolean;
 }
 
 export const Toolbar: React.FC<ToolbarProps> = ({

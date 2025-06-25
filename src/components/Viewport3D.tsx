@@ -1,7 +1,7 @@
 import React, { useRef, useEffect, useCallback, useState } from 'react';
-import * as THREE from 'three';
 import { ThreeRenderer, RenderObject, LightSettings, GridSettings } from '../three/ThreeRenderer';
 import { TransformGizmo } from './TransformGizmo';
+import { SketchEngine3D, SketchShape3D } from '../utils/sketch3d';
 import { Vec3 } from '../utils/math';
 
 interface Viewport3DProps {
@@ -14,8 +14,17 @@ interface Viewport3DProps {
   onMeasurementPoint?: (point: Vec3) => void;
   measurementActive?: boolean;
   transformMode: 'translate' | 'rotate' | 'scale';
-  onSetTransformMode: (mode: 'translate' | 'rotate' | 'scale') => void;
   onObjectTransform?: (id: string, transform: { position?: Vec3; rotation?: Vec3; scale?: Vec3 }) => void;
+  sketchMode?: boolean;
+  onSketchComplete?: (shapes: SketchShape3D[]) => void;
+  sketchTool?: string;
+  sketchModeType?: 'surface' | 'plane' | 'free';
+  sketchSettings?: {
+    snapToGrid: boolean;
+    gridSize: number;
+    workplaneVisible: boolean;
+  };
+  onSketchSettingsChange?: (settings: any) => void;
 }
 
 export const Viewport3D: React.FC<Viewport3DProps> = ({
@@ -28,27 +37,38 @@ export const Viewport3D: React.FC<Viewport3DProps> = ({
   onMeasurementPoint,
   measurementActive = false,
   transformMode,
-  onSetTransformMode,
-  onObjectTransform
+  onObjectTransform,
+  sketchMode = false,
+  onSketchComplete,
+  sketchTool = 'line',
+  sketchModeType = 'surface',
+  sketchSettings = { snapToGrid: true, gridSize: 0.5, workplaneVisible: true },
+  onSketchSettingsChange
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rendererRef = useRef<ThreeRenderer | null>(null);
-  const animationFrameRef = useRef<number>();
+  const sketchEngineRef = useRef<SketchEngine3D | null>(null);
   const [isInitialized, setIsInitialized] = useState(false);
   const [cameraControlsEnabled, setCameraControlsEnabled] = useState(true);
 
-  // Camera state
+
   const cameraRef = useRef({
     distance: 15,
     azimuth: 0,
     elevation: Math.PI / 4,
     target: new Vec3(0, 0, 0),
     isDragging: false,
+    isPanning: false,
     lastMouseX: 0,
     lastMouseY: 0
   });
 
-  // Update camera position and call callback
+  const renderOnce = useCallback(() => {
+    if (rendererRef.current) {
+      rendererRef.current.render();
+    }
+  }, []);
+
   const updateCamera = useCallback(() => {
     const camera = cameraRef.current;
     const position = new Vec3(
@@ -56,60 +76,103 @@ export const Viewport3D: React.FC<Viewport3DProps> = ({
       camera.target.y + camera.distance * Math.sin(camera.elevation),
       camera.target.z + camera.distance * Math.cos(camera.elevation) * Math.sin(camera.azimuth)
     );
+    rendererRef.current?.updateCamera(position, camera.target);
+    onCameraUpdate?.(position, camera.target);
+    renderOnce();
+  }, [onCameraUpdate, renderOnce]);
 
-    if (rendererRef.current) {
-      rendererRef.current.updateCamera(position, camera.target);
+  useEffect(() => {
+    if (selectedObjectId) {
+      setCameraControlsEnabled(false);
+    } else {
+      setCameraControlsEnabled(true);
+    }
+  }, [selectedObjectId]);
+
+  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    // Handle sketch events first
+    if (sketchMode && sketchEngineRef.current) {
+      if (sketchEngineRef.current.handleMouseDown(e.nativeEvent)) {
+        setCameraControlsEnabled(false);
+        renderOnce();
+        return;
+      }
     }
 
-    onCameraUpdate?.(position, camera.target);
-  }, [onCameraUpdate]);
-
-  // Mouse event handlers for orbit controls
-  const handleMouseDown = useCallback((e: React.MouseEvent) => {
-    if (measurementActive || !cameraControlsEnabled) return;
-
-    cameraRef.current.isDragging = true;
+    // Then check camera controls
+    if (!cameraControlsEnabled) return;
+    if (measurementActive) return;
+  
+    if (e.button === 0) cameraRef.current.isDragging = true;
+    else if (e.button === 2) cameraRef.current.isPanning = true;
+  
     cameraRef.current.lastMouseX = e.clientX;
     cameraRef.current.lastMouseY = e.clientY;
-  }, [measurementActive, cameraControlsEnabled]);
-
+  }, [cameraControlsEnabled, measurementActive, sketchMode, renderOnce]);
+  
   const handleMouseMove = useCallback((e: React.MouseEvent) => {
-    if (!cameraRef.current.isDragging || measurementActive || !cameraControlsEnabled) return;
+    // Handle sketch events FIRST, before checking camera controls
+    if (sketchMode && sketchEngineRef.current && sketchEngineRef.current.handleMouseMove(e.nativeEvent)) {
+      renderOnce();
+      return;
+    }
 
+    // Then check camera controls
+    if (!cameraControlsEnabled) return;
+    if (measurementActive) return;
+  
+    if ((!cameraRef.current.isDragging && !cameraRef.current.isPanning)) return;
+  
     const deltaX = e.clientX - cameraRef.current.lastMouseX;
     const deltaY = e.clientY - cameraRef.current.lastMouseY;
-
-    cameraRef.current.azimuth -= deltaX * 0.01;
-    cameraRef.current.elevation = Math.max(
-      -Math.PI / 2 + 0.1,
-      Math.min(Math.PI / 2 - 0.1, cameraRef.current.elevation - deltaY * 0.01)
-    );
-
+  
+    if (cameraRef.current.isDragging) {
+      cameraRef.current.azimuth -= deltaX * 0.01;
+      cameraRef.current.elevation = Math.max(
+        -Math.PI / 2 + 0.1,
+        Math.min(Math.PI / 2 - 0.1, cameraRef.current.elevation - deltaY * 0.01)
+      );
+    } else if (cameraRef.current.isPanning) {
+      const panSpeed = 0.01;
+      const right = new Vec3(Math.cos(cameraRef.current.azimuth + Math.PI / 2), 0, Math.sin(cameraRef.current.azimuth + Math.PI / 2));
+      const up = new Vec3(0, 1, 0);
+      cameraRef.current.target.x -= right.x * deltaX * panSpeed;
+      cameraRef.current.target.z -= right.z * deltaX * panSpeed;
+      cameraRef.current.target.y += up.y * deltaY * panSpeed;
+    }
+  
     cameraRef.current.lastMouseX = e.clientX;
     cameraRef.current.lastMouseY = e.clientY;
-
     updateCamera();
-  }, [updateCamera, measurementActive, cameraControlsEnabled]);
+  }, [updateCamera, measurementActive, sketchMode, renderOnce]);
+  
 
-  const handleMouseUp = useCallback(() => {
+  const handleMouseUp = useCallback((e: React.MouseEvent) => {
+    if (sketchMode && sketchEngineRef.current && sketchEngineRef.current.handleMouseUp(e.nativeEvent)) {
+      setCameraControlsEnabled(true);
+      renderOnce();
+      return;
+    }
     cameraRef.current.isDragging = false;
-  }, []);
+    cameraRef.current.isPanning = false;
+    setCameraControlsEnabled(true);
+  }, [sketchMode, renderOnce]);
 
   const handleWheel = useCallback((e: React.WheelEvent) => {
     e.preventDefault();
-    cameraRef.current.distance = Math.max(
-      2,
-      Math.min(50, cameraRef.current.distance + e.deltaY * 0.01)
-    );
+    cameraRef.current.distance = Math.max(2, Math.min(50, cameraRef.current.distance + e.deltaY * 0.01));
     updateCamera();
   }, [updateCamera]);
 
   const handleCanvasClick = useCallback((e: React.MouseEvent) => {
-    if (cameraRef.current.isDragging || !rendererRef.current) return;
+    if (cameraRef.current.isDragging || cameraRef.current.isPanning || !rendererRef.current) return;
+    if (sketchMode && sketchEngineRef.current && sketchEngineRef.current.handleClick(e.nativeEvent)) {
+      renderOnce();
+      return;
+    }
 
     const rect = canvasRef.current?.getBoundingClientRect();
     if (!rect) return;
-
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
 
@@ -118,155 +181,157 @@ export const Viewport3D: React.FC<Viewport3DProps> = ({
       if (worldPoint) {
         const snappedPoint = rendererRef.current.snapToGrid(worldPoint);
         onMeasurementPoint(snappedPoint);
+        renderOnce();
       }
-    } else {
+    } else if (!sketchMode) {
       const objectId = rendererRef.current.getObjectAtPoint(x, y);
       onObjectSelect(objectId);
+      renderOnce();
     }
-  }, [measurementActive, onMeasurementPoint, onObjectSelect]);
+  }, [measurementActive, sketchMode, onMeasurementPoint, onObjectSelect, renderOnce]);
 
-  // Handlers for TransformGizmo interaction
+  const handleDoubleClick = useCallback((e: React.MouseEvent) => {
+    if (sketchMode && sketchEngineRef.current) {
+      sketchEngineRef.current.handleDoubleClick(e.nativeEvent);
+      renderOnce();
+    }
+  }, [sketchMode, renderOnce]);
+
+  const handleContextMenu = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+  }, []);
+
+
   const handleTransformStart = useCallback(() => {
-    setCameraControlsEnabled(false);
+    setCameraControlsEnabled(false); // keep disabled
   }, []);
-
+  
   const handleTransformEnd = useCallback(() => {
-    setCameraControlsEnabled(true);
-  }, []);
-
+    if (!selectedObjectId) {
+      setCameraControlsEnabled(true); // only enable if no object selected
+    }
+  }, [selectedObjectId]);
+  
   const handleTransform = useCallback((object: THREE.Object3D) => {
     if (!selectedObjectId || !onObjectTransform) return;
-
+  
     const position = new Vec3(object.position.x, object.position.y, object.position.z);
     const rotation = new Vec3(object.rotation.x, object.rotation.y, object.rotation.z);
     const scale = new Vec3(object.scale.x, object.scale.y, object.scale.z);
-
+  
+    // This must trigger a state update in the parent component
     onObjectTransform(selectedObjectId, { position, rotation, scale });
   }, [selectedObjectId, onObjectTransform]);
-
-  // Render loop
-  const render = useCallback(() => {
-    if (rendererRef.current) {
-      rendererRef.current.render();
-    }
-    animationFrameRef.current = requestAnimationFrame(render);
-  }, []);
-
-  // Initialize ThreeRenderer once
+  
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
     try {
       rendererRef.current = new ThreeRenderer(canvas);
+      sketchEngineRef.current = new SketchEngine3D(rendererRef.current.getScene(), rendererRef.current.getCamera(), rendererRef.current.getRenderer());
       updateCamera();
       setIsInitialized(true);
-      render();
+      renderOnce();
     } catch (error) {
       console.error('Failed to initialize Three.js:', error);
     }
 
     return () => {
-      if (animationFrameRef.current) {
-        cancelAnimationFrame(animationFrameRef.current);
-      }
-      if (rendererRef.current) {
-        rendererRef.current.dispose();
-      }
+      rendererRef.current?.dispose();
+      sketchEngineRef.current?.dispose();
     };
-  }, [render, updateCamera]);
+  }, [updateCamera, renderOnce]);
 
-  // Incrementally update objects on changes
+  useEffect(() => {
+    if (sketchEngineRef.current && isInitialized) {
+      sketchEngineRef.current.setTool(sketchTool);
+      sketchEngineRef.current.setSketchMode(sketchModeType);
+      sketchEngineRef.current.setSnapToGrid(sketchSettings.snapToGrid);
+      sketchEngineRef.current.setGridSize(sketchSettings.gridSize);
+      sketchEngineRef.current.setWorkplaneVisible(sketchSettings.workplaneVisible);
+      renderOnce();
+    }
+  }, [sketchTool, sketchModeType, sketchSettings, isInitialized, renderOnce]);
+
+  useEffect(() => {
+    if (onSketchSettingsChange && sketchEngineRef.current && isInitialized) {
+      const sketchAPI = {
+        getShapes: () => sketchEngineRef.current?.getShapes() || [],
+        clear: () => sketchEngineRef.current?.clear(),
+        finishSketch: () => sketchEngineRef.current?.finishCurrentSketch()
+      };
+      onSketchSettingsChange(sketchAPI);
+    }
+    // Only run once when initialized
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isInitialized]);
+  
+  
+  const prevObjectsRef = useRef<Map<string, RenderObject>>(new Map());
+
   useEffect(() => {
     if (!rendererRef.current || !isInitialized) return;
-
-    const existingObjects = rendererRef.current.getObjects();
-    const existingIds = new Set(existingObjects.map(obj => obj.id));
-    const incomingIds = new Set(objects.map(obj => obj.id));
-
-    // Remove objects no longer present
-    existingObjects.forEach(obj => {
-      if (!incomingIds.has(obj.id)) {
-        rendererRef.current!.removeObject(obj.id);
+  
+    const prevObjects = prevObjectsRef.current;
+    const currentIds = new Set(objects.map(o => o.id));
+  
+    // Remove deleted objects
+    for (const [id] of prevObjects) {
+      if (!currentIds.has(id)) {
+        rendererRef.current.removeObject(id);
+        prevObjects.delete(id);
       }
-    });
-
-    // Add or update objects
-    objects.forEach(obj => {
-      if (obj.mesh && obj.mesh.geometry) {
-        if (!existingIds.has(obj.id)) {
-          rendererRef.current!.addObject(obj.id, obj.mesh.geometry, obj.color);
+    }
+  
+    // Add or update current objects
+    for (const obj of objects) {
+      const prev = prevObjects.get(obj.id);
+  
+      if (!prev) {
+        if (obj.mesh && obj.mesh.geometry) {
+          rendererRef.current.addObject(obj.id, obj.mesh.geometry, obj.color);
         }
-        rendererRef.current!.updateObject(obj.id, {
-          position: obj.position,
-          rotation: obj.rotation,
-          scale: obj.scale,
-          color: obj.color,
-          selected: obj.id === selectedObjectId,
-          visible: obj.visible
-        });
       }
-    });
-  }, [objects, selectedObjectId, isInitialized]);
-
-  // Update lighting and grid settings
-  useEffect(() => {
-    if (rendererRef.current && isInitialized) {
-      rendererRef.current.updateLighting(lightSettings);
+  
+      // Always update transformation and selection state
+      rendererRef.current.updateObject(obj.id, {
+        position: obj.position,
+        rotation: obj.rotation,
+        scale: obj.scale,
+        color: obj.color,
+        selected: obj.id === selectedObjectId,
+        visible: obj.visible,
+      });
+  
+      prevObjects.set(obj.id, obj);
     }
-  }, [lightSettings, isInitialized]);
-
-  useEffect(() => {
-    if (rendererRef.current && isInitialized) {
-      rendererRef.current.updateGridSettings(gridSettings);
-    }
-  }, [gridSettings, isInitialized]);
-
-  // Handle canvas resize
+  
+    renderOnce();
+  }, [objects, selectedObjectId, isInitialized, renderOnce]);
   useEffect(() => {
     const handleResize = () => {
       const canvas = canvasRef.current;
       if (canvas && rendererRef.current) {
         const rect = canvas.getBoundingClientRect();
         rendererRef.current.resize(rect.width, rect.height);
+        renderOnce();
       }
     };
-
     window.addEventListener('resize', handleResize);
     handleResize();
-
     return () => window.removeEventListener('resize', handleResize);
-  }, []);
+  }, [renderOnce]);
 
-  // Keyboard shortcuts for transform mode (R, S, G)
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
-
-      if (e.key === 'r' || e.key === 'R') {
-        onSetTransformMode('rotate');
-      } else if (e.key === 's' || e.key === 'S') {
-        onSetTransformMode('scale');
-      } else if (e.key === 'g' || e.key === 'G') {
-        onSetTransformMode('translate');
-      }
-    };
-
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [onSetTransformMode]);
-
-  // Determine cursor style
   const getCursorStyle = () => {
-    if (measurementActive) return 'cursor-crosshair';
+    if (measurementActive || sketchMode) return 'cursor-crosshair';
     if (cameraRef.current.isDragging) return 'cursor-grabbing';
+    if (cameraRef.current.isPanning) return 'cursor-move';
     if (!cameraControlsEnabled) return 'cursor-default';
     return 'cursor-grab';
   };
 
-  // Selected mesh for TransformGizmo
   const selectedMesh = rendererRef.current?.getSelectedMesh() || null;
-
   return (
     <div className="w-full h-full relative bg-gray-900">
       <canvas
@@ -278,10 +343,11 @@ export const Viewport3D: React.FC<Viewport3DProps> = ({
         onMouseLeave={handleMouseUp}
         onWheel={handleWheel}
         onClick={handleCanvasClick}
+        onDoubleClick={handleDoubleClick}
+        onContextMenu={handleContextMenu}
       />
-
-      {/* Transform Gizmo */}
-      {isInitialized && rendererRef.current && selectedMesh && (
+  
+  {isInitialized && rendererRef.current && selectedMesh && (
         <TransformGizmo
           scene={rendererRef.current.getScene()}
           camera={rendererRef.current.getCamera()}
@@ -293,6 +359,111 @@ export const Viewport3D: React.FC<Viewport3DProps> = ({
           onTransform={handleTransform}
         />
       )}
+  
+      {/* Viewport controls overlay */}
+      <div className="absolute top-4 right-4 bg-gray-800 bg-opacity-90 rounded-lg p-3 text-white text-sm">
+        <div className="font-semibold mb-2">
+          {sketchMode
+            ? '3D Sketch Mode'
+            : measurementActive
+            ? 'Measurement Mode'
+            : `Transform: ${transformMode.toUpperCase()}`}
+        </div>
+        <div className="text-xs text-gray-300 space-y-1">
+          {sketchMode ? (
+            <>
+              <div>• Click surfaces to create workplanes</div>
+              <div>• Draw directly on surfaces</div>
+              <div>• Double-click to finish polygons</div>
+              <div>• Right-click: Pan • Scroll: Zoom</div>
+            </>
+          ) : measurementActive ? (
+            <>
+              <div>• Click points to measure</div>
+              <div>• Grid snap: {gridSettings.snapEnabled ? 'On' : 'Off'}</div>
+            </>
+          ) : (
+            <>
+              <div>• G: Move • R: Rotate • S: Scale</div>
+              <div>• Left-drag: Orbit • Right-drag: Pan</div>
+              <div>• Scroll: Zoom • Click: Select</div>
+            </>
+          )}
+        </div>
+      </div>
+  
+      {/* Grid info */}
+      {gridSettings.visible && (
+        <div className="absolute bottom-4 right-4 bg-gray-800 bg-opacity-90 rounded-lg p-2 text-white text-xs">
+          <div>Grid: {gridSettings.size}×{gridSettings.size}</div>
+          <div>Snap: {gridSettings.snapEnabled ? 'On' : 'Off'}</div>
+        </div>
+      )}
+  
+      {/* Three.js indicator */}
+      <div className="absolute bottom-4 left-4 bg-gray-800 bg-opacity-90 rounded-lg p-2 text-white text-xs">
+        <div className="flex items-center gap-2">
+          <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
+          <span>Three.js Renderer</span>
+        </div>
+        <div className="text-gray-400">Hardware Accelerated</div>
+      </div>
+  
+      {/* Lighting indicator */}
+      <div className="absolute top-4 left-4 bg-gray-800 bg-opacity-90 rounded-lg p-2 text-white text-xs">
+        <div>Lights: {Object.values(lightSettings).filter(light => light.intensity > 0).length}</div>
+        <div className="text-gray-400">PBR Lighting</div>
+      </div>
+  
+      {/* Sketch mode banner */}
+      {sketchMode && (
+        <div className="absolute top-1/2 left-4 transform -translate-y-1/2 bg-green-900 bg-opacity-95 rounded-lg p-3 text-white text-sm border border-green-600">
+          <div className="font-semibold mb-1 text-green-300">🎨 3D Sketch Mode Active</div>
+          <div className="text-green-200 text-xs space-y-1">
+            <div>• Click on any surface to start sketching</div>
+            <div>• Create workplanes at any angle</div>
+            <div>• Draw lines, rectangles, circles, polygons</div>
+            <div>• Double-click to finish polygons</div>
+            <div>• Use Extrude button to create 3D objects</div>
+          </div>
+        </div>
+      )}
+  
+      {/* Transform mode banner */}
+      {selectedObjectId && !sketchMode && (
+        <div className="absolute top-1/2 left-4 transform -translate-y-1/2 bg-blue-900 bg-opacity-95 rounded-lg p-3 text-white text-sm border border-blue-600">
+          <div className="font-semibold mb-1 text-blue-300">🎯 Transform Mode</div>
+          <div className="text-blue-200 text-xs space-y-1">
+            <div className={transformMode === 'translate' ? 'text-blue-300 font-bold' : ''}>G - Move Object</div>
+            <div className={transformMode === 'rotate' ? 'text-blue-300 font-bold' : ''}>R - Rotate Object</div>
+            <div className={transformMode === 'scale' ? 'text-blue-300 font-bold' : ''}>S - Scale Object</div>
+            <div className="text-blue-400 mt-2">Use gizmo handles to transform</div>
+          </div>
+        </div>
+      )}
+  
+      {/* Sketch tool help box */}
+      
+      {sketchMode && (
+        <div className="absolute bottom-20 left-1/2 transform -translate-x-1/2 bg-gray-900 bg-opacity-95 rounded-lg p-3 text-white text-sm border border-gray-600">
+          <div className="text-center">
+            <div className="font-semibold text-green-400 mb-1">
+              Tool: {sketchTool.charAt(0).toUpperCase() + sketchTool.slice(1)}
+            </div>
+            <div className="text-xs text-gray-300">
+              {sketchTool === 'polygon'
+                ? 'Click points, double-click to finish'
+                : sketchTool === 'line'
+                ? 'Click start and end points'
+                : sketchTool === 'rectangle'
+                ? 'Click and drag to create rectangle'
+                : sketchTool === 'circle'
+                ? 'Click center, then drag to edge'
+                : 'Click to add points'}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
-};
+}

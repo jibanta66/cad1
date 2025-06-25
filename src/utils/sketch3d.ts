@@ -1,5 +1,4 @@
 import * as THREE from 'three';
-import { Vec3 } from './math';
 
 export interface SketchPoint3D {
   position: THREE.Vector3;
@@ -16,6 +15,7 @@ export interface SketchShape3D {
   workplane?: THREE.Plane;
   normal?: THREE.Vector3;
 }
+
 
 export class SketchEngine3D {
   private scene: THREE.Scene;
@@ -40,6 +40,31 @@ export class SketchEngine3D {
   private sketchMeshes: THREE.Mesh[] = [];
   private previewLine: THREE.Line | null = null;
   private previewMesh: THREE.Mesh | null = null;
+  private sketchPoints: THREE.Mesh[] = [];
+
+  // Drawing state
+  private startPoint: THREE.Vector3 | null = null;
+  private isDragging: boolean = false;
+  private hasWorkplane: boolean = false;
+
+  private clearWorkplane(): void {
+    if (this.workplane) {
+      this.scene.remove(this.workplane);
+      this.workplane.geometry.dispose();
+      (this.workplane.material as THREE.Material).dispose();
+      this.workplane = null;
+    }
+  
+    if (this.gridHelper) {
+      this.scene.remove(this.gridHelper);
+      (this.gridHelper.material as THREE.Material).dispose();
+      this.gridHelper = null;
+    }
+  
+    this.hasWorkplane = false;
+    console.log('Workplane cleared');
+  }
+  
 
   constructor(scene: THREE.Scene, camera: THREE.PerspectiveCamera, renderer: THREE.WebGLRenderer) {
     this.scene = scene;
@@ -49,45 +74,67 @@ export class SketchEngine3D {
     this.mouse = new THREE.Vector2();
   }
 
-  // Event handlers that will be called from Viewport3D
-  handleClick(event: MouseEvent): boolean {
-    this.updateMousePosition(event);
-    
-    if (!this.workplane && (this.sketchMode === 'surface' || this.sketchMode === 'plane')) {
-      return this.createWorkplane();
-    } else if (this.workplane) {
-      this.addSketchPoint();
-      return true;
-    }
-    return false;
+  // Main event handlers
+ // Updated handleClick to ignore clicks if dragging (important for rectangles/circles)
+handleClick(event: MouseEvent): boolean {
+  this.updateMousePosition(event);
+
+  // Ignore click if currently dragging (to avoid conflicts)
+  if (this.isDragging) return false;
+
+  if (!this.hasWorkplane) {
+    return this.createWorkplane();
   }
 
-  handleMouseDown(event: MouseEvent): boolean {
-    if (event.button === 0 && this.workplane) { // Left click
-      this.updateMousePosition(event);
-      this.startDrawing();
-      return true;
-    }
-    return false;
+  switch (this.currentTool) {
+    case 'line':
+      return this.handleLineClick();
+    case 'rectangle':
+      // rectangle uses drag only, ignore click
+      return false;
+    case 'circle':
+      // circle uses drag only, ignore click
+      return false;
+    case 'polygon':
+      return this.handlePolygonClick();
+    default:
+      return false;
+  }
+  
+}
+// Start dragging for rectangle or circle
+handleMouseDown(event: MouseEvent): boolean {
+  if (event.button !== 0 || !this.hasWorkplane) return false;
+
+  this.updateMousePosition(event);
+
+  if (this.currentTool === 'rectangle' || this.currentTool === 'circle') {
+    return this.startDragOperation();
   }
 
-  handleMouseMove(event: MouseEvent): boolean {
-    this.updateMousePosition(event);
-    
-    if (this.isDrawing && this.currentShape) {
-      this.updatePreview();
-      return true;
-    }
-    return false;
+  return false;
+}
+
+// Update preview during dragging
+handleMouseMove(event: MouseEvent): boolean {
+  this.updateMousePosition(event);
+
+  if (this.isDragging && this.hasWorkplane) {
+    this.updateDragPreview();
+    return true;
   }
 
-  handleMouseUp(event: MouseEvent): boolean {
-    if (event.button === 0 && this.isDrawing) { // Left click
-      this.finishDrawing();
-      return true;
-    }
-    return false;
+  return false;
+}
+
+// Finish drawing shape on mouse up if dragging
+handleMouseUp(event: MouseEvent): boolean {
+  if (this.isDragging && this.hasWorkplane) {
+    this.finishDragOperation();
+    return true;
   }
+  return false;
+}
 
   handleDoubleClick(event: MouseEvent): boolean {
     if (this.currentTool === 'polygon' && this.currentShape) {
@@ -97,521 +144,471 @@ export class SketchEngine3D {
     return false;
   }
 
-  private updateMousePosition(event: MouseEvent): void {
-    const rect = this.renderer.domElement.getBoundingClientRect();
-    this.mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
-    this.mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+  
+  // Tool-specific handlers
+  private handleLineClick(): boolean {
+    const point = this.getWorkplaneIntersection();
+    if (!point) return false;
+
+    if (!this.isDrawing) {
+      this.startPoint = point.clone();
+      this.isDrawing = true;
+      this.addSketchPoint(point);
+      console.log('Started line at:', point);
+    } else {
+      this.finishLine(point);
+      this.isDrawing = false;
+      this.startPoint = null;
+    }
+    return true;
   }
 
-  private createWorkplane(): boolean {
-    this.raycaster.setFromCamera(this.mouse, this.camera);
-    
-    if (this.sketchMode === 'surface') {
-      // Get all meshes in the scene (excluding existing workplane and grid)
-      const meshes = this.scene.children.filter(child => 
-        child instanceof THREE.Mesh && 
-        child !== this.workplane && 
-        child !== this.gridHelper &&
-        !this.sketchLines.includes(child as any) &&
-        !this.sketchMeshes.includes(child)
-      ) as THREE.Mesh[];
-      
-      const intersects = this.raycaster.intersectObjects(meshes);
-      
-      if (intersects.length > 0) {
-        const intersection = intersects[0];
-        const point = intersection.point;
-        const normal = intersection.face?.normal || new THREE.Vector3(0, 1, 0);
-        
-        // Transform normal to world space
-        const worldNormal = normal.clone().transformDirection(intersection.object.matrixWorld);
-        
-        this.createWorkplaneAt(point, worldNormal);
-        return true;
-      }
-    } else if (this.sketchMode === 'plane') {
-      // Create workplane at a fixed distance from camera
-      const distance = 5;
-      const direction = new THREE.Vector3();
-      this.camera.getWorldDirection(direction);
-      
-      const point = this.camera.position.clone().add(direction.multiplyScalar(distance));
-      const normal = direction.negate();
-      
-      this.createWorkplaneAt(point, normal);
-      return true;
-    }
-    
+  private handleRectangleClick(): boolean {
+    // Clicks ignored; rectangle uses drag
     return false;
   }
 
-  private createWorkplaneAt(position: THREE.Vector3, normal: THREE.Vector3): void {
-    // Remove existing workplane
-    this.clearWorkplane();
-    
-    // Create workplane geometry
-    const planeGeometry = new THREE.PlaneGeometry(10, 10);
-    const planeMaterial = new THREE.MeshBasicMaterial({
-      color: 0x4ade80,
-      transparent: true,
-      opacity: this.workplaneVisible ? 0.2 : 0,
-      side: THREE.DoubleSide
-    });
-    
-    this.workplane = new THREE.Mesh(planeGeometry, planeMaterial);
-    this.workplane.position.copy(position);
-    this.workplane.lookAt(position.clone().add(normal));
-    
-    // Create grid helper
-    this.gridHelper = new THREE.GridHelper(10, 10 / this.gridSize, 0x4ade80, 0x4ade80);
-    this.gridHelper.position.copy(position);
-    this.gridHelper.lookAt(position.clone().add(normal));
-    
-    // Make grid helper match workplane orientation
-    this.gridHelper.rotation.copy(this.workplane.rotation);
-    
-    this.scene.add(this.workplane);
-    if (this.workplaneVisible) {
-      this.scene.add(this.gridHelper);
-    }
+  private handleCircleClick(): boolean {
+    // Clicks ignored; circle uses drag
+    return false;
   }
 
-  private clearWorkplane(): void {
-    if (this.workplane) {
-      this.scene.remove(this.workplane);
-      this.workplane = null;
-    }
-    if (this.gridHelper) {
-      this.scene.remove(this.gridHelper);
-      this.gridHelper = null;
-    }
-  }
-
-  private startDrawing(): void {
-    if (!this.workplane) return;
-    
+  private handlePolygonClick(): boolean {
     const point = this.getWorkplaneIntersection();
-    if (!point) return;
-    
-    this.isDrawing = true;
-    
-    switch (this.currentTool) {
-      case 'line':
-        this.startLine(point);
-        break;
-      case 'rectangle':
-        this.startRectangle(point);
-        break;
-      case 'circle':
-        this.startCircle(point);
-        break;
-      case 'polygon':
-        this.addPolygonPoint(point);
-        break;
-      case 'spline':
-        this.startSpline(point);
-        break;
-    }
-  }
+    if (!point) return false;
 
-  private finishDrawing(): void {
-    if (!this.isDrawing || !this.currentShape) return;
-    
-    const point = this.getWorkplaneIntersection();
-    if (!point) return;
-    
-    switch (this.currentTool) {
-      case 'line':
-        this.finishLine(point);
-        break;
-      case 'rectangle':
-        this.finishRectangle(point);
-        break;
-      case 'circle':
-        this.finishCircle(point);
-        break;
-      case 'spline':
-        this.addSplinePoint(point);
-        break;
-    }
-    
-    this.isDrawing = false;
-  }
-
-  private getWorkplaneIntersection(): THREE.Vector3 | null {
-    if (!this.workplane) return null;
-    
-    this.raycaster.setFromCamera(this.mouse, this.camera);
-    const intersects = this.raycaster.intersectObject(this.workplane);
-    
-    if (intersects.length > 0) {
-      let point = intersects[0].point;
-      
-      if (this.snapToGrid) {
-        point = this.snapPointToGrid(point);
-      }
-      
-      return point;
-    }
-    
-    return null;
-  }
-
-  private snapPointToGrid(point: THREE.Vector3): THREE.Vector3 {
-    if (!this.workplane) return point;
-    
-    // Convert world point to workplane local coordinates
-    const localPoint = this.workplane.worldToLocal(point.clone());
-    
-    // Snap to grid
-    localPoint.x = Math.round(localPoint.x / this.gridSize) * this.gridSize;
-    localPoint.y = Math.round(localPoint.y / this.gridSize) * this.gridSize;
-    localPoint.z = 0; // Keep on workplane
-    
-    // Convert back to world coordinates
-    return this.workplane.localToWorld(localPoint);
-  }
-
-  private startLine(startPoint: THREE.Vector3): void {
-    this.currentShape = {
-      type: 'line',
-      points: [{
-        position: startPoint.clone(),
-        id: `point-${Date.now()}`,
-        onSurface: true
-      }],
-      id: `line-${Date.now()}`,
-      closed: false
-    };
-  }
-
-  private finishLine(endPoint: THREE.Vector3): void {
-    if (!this.currentShape) return;
-    
-    this.currentShape.points.push({
-      position: endPoint.clone(),
-      id: `point-${Date.now()}`,
-      onSurface: true
-    });
-    
-    this.createSketchLine(this.currentShape);
-    this.shapes.push(this.currentShape);
-    this.currentShape = null;
-  }
-
-  private startRectangle(startPoint: THREE.Vector3): void {
-    this.currentShape = {
-      type: 'rectangle',
-      points: [{
-        position: startPoint.clone(),
-        id: `point-${Date.now()}`,
-        onSurface: true
-      }],
-      id: `rect-${Date.now()}`,
-      closed: true
-    };
-  }
-
-  private finishRectangle(endPoint: THREE.Vector3): void {
-    if (!this.currentShape) return;
-    
-    const startPoint = this.currentShape.points[0].position;
-    
-    // Create rectangle points
-    this.currentShape.points = [
-      this.currentShape.points[0],
-      {
-        position: new THREE.Vector3(endPoint.x, startPoint.y, startPoint.z),
-        id: `point-${Date.now()}`,
-        onSurface: true
-      },
-      {
-        position: endPoint.clone(),
-        id: `point-${Date.now()}`,
-        onSurface: true
-      },
-      {
-        position: new THREE.Vector3(startPoint.x, endPoint.y, startPoint.z),
-        id: `point-${Date.now()}`,
-        onSurface: true
-      }
-    ];
-    
-    this.createSketchLine(this.currentShape);
-    this.shapes.push(this.currentShape);
-    this.currentShape = null;
-  }
-
-  private startCircle(centerPoint: THREE.Vector3): void {
-    this.currentShape = {
-      type: 'circle',
-      points: [{
-        position: centerPoint.clone(),
-        id: `point-${Date.now()}`,
-        onSurface: true
-      }],
-      id: `circle-${Date.now()}`,
-      closed: true
-    };
-  }
-
-  private finishCircle(edgePoint: THREE.Vector3): void {
-    if (!this.currentShape) return;
-    
-    this.currentShape.points.push({
-      position: edgePoint.clone(),
-      id: `point-${Date.now()}`,
-      onSurface: true
-    });
-    
-    this.createSketchCircle(this.currentShape);
-    this.shapes.push(this.currentShape);
-    this.currentShape = null;
-  }
-
-  private addPolygonPoint(point: THREE.Vector3): void {
     if (!this.currentShape) {
       this.currentShape = {
         type: 'polygon',
-        points: [],
+        points: [{
+          position: point.clone(),
+          id: `point-${Date.now()}`,
+          onSurface: true
+        }],
         id: `polygon-${Date.now()}`,
         closed: false
       };
+      this.addSketchPoint(point);
+      console.log('Started polygon at:', point);
+    } else {
+      this.currentShape.points.push({
+        position: point.clone(),
+        id: `point-${Date.now()}`,
+        onSurface: true
+      });
+      this.addSketchPoint(point);
+      this.updatePolygonPreview();
     }
-    
-    this.currentShape.points.push({
-      position: point.clone(),
-      id: `point-${Date.now()}`,
+    return true;
+  }
+
+  // Drag operations
+ 
+  private startDragOperation(): boolean {
+    const point = this.getWorkplaneIntersection();
+    if (!point) return false;
+  
+    this.startPoint = point.clone();
+    this.isDragging = true;
+  
+    this.clearPreview();
+    this.addSketchPoint(point);
+    console.log(`Started dragging ${this.currentTool} at:`, point);
+    return true;
+  }
+  private updateDragPreview(): void {
+    if (!this.startPoint) return;
+    const currentPoint = this.getWorkplaneIntersection();
+    if (!currentPoint) return;
+  
+    // REMOVE THIS:
+    // currentPoint.x += 0.1;
+  
+    this.clearPreview();
+  
+    if (this.currentTool === 'rectangle') {
+      this.createRectanglePreview(this.startPoint, currentPoint);
+    } else if (this.currentTool === 'circle') {
+      this.createCirclePreview(this.startPoint, currentPoint);
+    }
+  }
+  
+  private finishDragOperation(): void {
+    if (!this.startPoint) return;
+  
+    const endPoint = this.getWorkplaneIntersection();
+    if (!endPoint) {
+      console.warn('No end point found on drag finish!');
+      this.isDragging = false;
+      this.startPoint = null;
+      this.clearPreview();
+      return;
+    }
+  
+    console.log('Drag finished from', this.startPoint, 'to', endPoint);
+  
+    // Check distance threshold to avoid zero-area rectangle
+    if (this.startPoint.distanceTo(endPoint) < 0.01) {
+      console.warn("Drag distance too small; ignoring shape creation.");
+      this.isDragging = false;
+      this.startPoint = null;
+      this.clearPreview();
+      return;
+    }
+  
+    if (this.currentTool === 'rectangle') {
+      this.finishRectangle(endPoint);
+    } else if (this.currentTool === 'circle') {
+      this.finishCircle(endPoint);
+    }
+  
+    this.isDragging = false;
+    this.startPoint = null;
+    this.clearPreview();
+  }
+  
+
+  // Shape completion
+  private finishLine(endPoint: THREE.Vector3): void {
+    if (!this.startPoint) return;
+
+    const shape: SketchShape3D = {
+      type: 'line',
+      points: [
+        {
+          position: this.startPoint.clone(),
+          id: `point-${Date.now()}`,
+          onSurface: true
+        },
+        {
+          position: endPoint.clone(),
+          id: `point-${Date.now()}`,
+          onSurface: true
+        }
+      ],
+      id: `line-${Date.now()}`,
+      closed: false
+    };
+
+    this.addSketchPoint(endPoint);
+    this.createSketchLine(shape);
+    this.shapes.push(shape);
+    console.log('Created line:', shape);
+  }
+// Add a little logging in finishRectangle to confirm points:
+private finishRectangle(endPoint: THREE.Vector3): void {
+  if (!this.startPoint) return;
+
+  const start = this.startPoint;
+  const end = endPoint;
+
+  // Convert to local workplane coordinates for rectangle corner calculation
+  const startLocal = this.worldToWorkplane(start);
+  const endLocal = this.worldToWorkplane(end);
+
+  console.log('Rectangle local corners (start, end):', startLocal, endLocal);
+
+  const corners = [
+    new THREE.Vector3(startLocal.x, startLocal.y, 0),
+    new THREE.Vector3(endLocal.x, startLocal.y, 0),
+    new THREE.Vector3(endLocal.x, endLocal.y, 0),
+    new THREE.Vector3(startLocal.x, endLocal.y, 0)
+  ];
+
+  const worldCorners = corners.map(corner => this.workplaneToWorld(corner));
+
+  console.log('Rectangle world corners:', worldCorners);
+
+  const shape: SketchShape3D = {
+    type: 'rectangle',
+    points: worldCorners.map((pos, i) => ({
+      position: pos,
+      id: `point-${Date.now()}-${i}`,
       onSurface: true
-    });
-    
-    this.updatePolygonPreview();
+    })),
+    id: `rect-${Date.now()}`,
+    closed: true
+  };
+
+  worldCorners.forEach(corner => this.addSketchPoint(corner));
+  this.createSketchLine(shape);
+  this.shapes.push(shape);
+  console.log('Created rectangle shape:', shape);
+}
+  private finishCircle(edgePoint: THREE.Vector3): void {
+    if (!this.startPoint) return;
+
+    const shape: SketchShape3D = {
+      type: 'circle',
+      points: [
+        {
+          position: this.startPoint.clone(),
+          id: `point-${Date.now()}`,
+          onSurface: true
+        },
+        {
+          position: edgePoint.clone(),
+          id: `point-${Date.now()}`,
+          onSurface: true
+        }
+      ],
+      id: `circle-${Date.now()}`,
+      closed: true
+    };
+
+    this.addSketchPoint(edgePoint);
+    this.createSketchCircle(shape);
+    this.shapes.push(shape);
+    console.log('Created circle:', shape);
   }
 
   private finishPolygon(): void {
     if (!this.currentShape || this.currentShape.points.length < 3) return;
-    
+
     this.currentShape.closed = true;
     this.createSketchLine(this.currentShape);
     this.shapes.push(this.currentShape);
+    console.log('Created polygon:', this.currentShape);
     this.currentShape = null;
     this.clearPreview();
   }
 
-  private startSpline(startPoint: THREE.Vector3): void {
-    this.currentShape = {
-      type: 'spline',
-      points: [{
-        position: startPoint.clone(),
-        id: `point-${Date.now()}`,
-        onSurface: true
-      }],
-      id: `spline-${Date.now()}`,
-      closed: false
-    };
-  }
-
-  private addSplinePoint(point: THREE.Vector3): void {
-    if (!this.currentShape) return;
-    
-    this.currentShape.points.push({
-      position: point.clone(),
-      id: `point-${Date.now()}`,
-      onSurface: true
-    });
-    
-    this.updateSplinePreview();
-  }
-
-  private createSketchLine(shape: SketchShape3D): void {
-    const points = shape.points.map(p => p.position);
-    
-    if (shape.closed && points.length > 2) {
-      // Close the shape
-      points.push(points[0]);
-    }
-    
-    const geometry = new THREE.BufferGeometry().setFromPoints(points);
+  // Previews
+  private createRectanglePreview(start: THREE.Vector3, end: THREE.Vector3): void {
+    const startLocal = this.worldToWorkplane(start);
+    const endLocal = this.worldToWorkplane(end);
+  
+    console.log("Preview rectangle corners local coords:", startLocal, endLocal);
+  
+    const corners = [
+      new THREE.Vector3(startLocal.x, startLocal.y, 0),
+      new THREE.Vector3(endLocal.x, startLocal.y, 0),
+      new THREE.Vector3(endLocal.x, endLocal.y, 0),
+      new THREE.Vector3(startLocal.x, endLocal.y, 0),
+      new THREE.Vector3(startLocal.x, startLocal.y, 0), // close rectangle
+    ];
+  
+    const worldCorners = corners.map(corner => this.workplaneToWorld(corner));
+    console.log("Preview rectangle corners world coords:", worldCorners);
+  
+    const geometry = new THREE.BufferGeometry().setFromPoints(worldCorners);
     const material = new THREE.LineBasicMaterial({
-      color: 0x60a5fa,
-      linewidth: 3
-    });
-    
-    const line = new THREE.Line(geometry, material);
-    this.scene.add(line);
-    this.sketchLines.push(line);
-  }
-
-  private createSketchCircle(shape: SketchShape3D): void {
-    if (shape.points.length < 2) return;
-    
-    const center = shape.points[0].position;
-    const edge = shape.points[1].position;
-    const radius = center.distanceTo(edge);
-    
-    // Create circle outline
-    const circleGeometry = new THREE.RingGeometry(radius * 0.98, radius * 1.02, 32);
-    const circleMaterial = new THREE.MeshBasicMaterial({
       color: 0x60a5fa,
       transparent: true,
       opacity: 0.7,
-      side: THREE.DoubleSide
+      linewidth: 2,
     });
-    
-    const circle = new THREE.Mesh(circleGeometry, circleMaterial);
-    circle.position.copy(center);
-    
-    if (this.workplane) {
-      circle.rotation.copy(this.workplane.rotation);
-    }
-    
-    this.scene.add(circle);
-    this.sketchMeshes.push(circle);
-  }
-
-  private updatePreview(): void {
-    if (!this.currentShape) return;
-    
-    const point = this.getWorkplaneIntersection();
-    if (!point) return;
-    
-    switch (this.currentTool) {
-      case 'line':
-        this.updateLinePreview(point);
-        break;
-      case 'rectangle':
-        this.updateRectanglePreview(point);
-        break;
-      case 'circle':
-        this.updateCirclePreview(point);
-        break;
-    }
-  }
-
-  private updateLinePreview(endPoint: THREE.Vector3): void {
-    if (!this.currentShape) return;
-    
-    this.clearPreview();
-    
-    const startPoint = this.currentShape.points[0].position;
-    const geometry = new THREE.BufferGeometry().setFromPoints([startPoint, endPoint]);
-    const material = new THREE.LineBasicMaterial({
-      color: 0x60a5fa,
-      transparent: true,
-      opacity: 0.5
-    });
-    
+  
     this.previewLine = new THREE.Line(geometry, material);
     this.scene.add(this.previewLine);
   }
+  
+  private createCirclePreview(center: THREE.Vector3, edge: THREE.Vector3): void {
+    const radius = center.distanceTo(edge);
 
-  private updateRectanglePreview(endPoint: THREE.Vector3): void {
-    if (!this.currentShape) return;
-    
-    this.clearPreview();
-    
-    const startPoint = this.currentShape.points[0].position;
-    const points = [
-      startPoint,
-      new THREE.Vector3(endPoint.x, startPoint.y, startPoint.z),
-      endPoint,
-      new THREE.Vector3(startPoint.x, endPoint.y, startPoint.z),
-      startPoint
-    ];
-    
+    if (this.previewLine) {
+      this.scene.remove(this.previewLine);
+      this.previewLine.geometry.dispose();
+      (this.previewLine.material as THREE.Material).dispose();
+      this.previewLine = null;
+    }
+
+    const curve = new THREE.EllipseCurve(
+      0, 0,
+      radius, radius,
+      0, 2 * Math.PI,
+      false,
+      0
+    );
+
+    const points = curve.getPoints(64);
     const geometry = new THREE.BufferGeometry().setFromPoints(points);
     const material = new THREE.LineBasicMaterial({
       color: 0x60a5fa,
       transparent: true,
-      opacity: 0.5
+      opacity: 0.7,
+      linewidth: 2
     });
-    
-    this.previewLine = new THREE.Line(geometry, material);
-    this.scene.add(this.previewLine);
-  }
 
-  private updateCirclePreview(edgePoint: THREE.Vector3): void {
-    if (!this.currentShape) return;
-    
-    this.clearPreview();
-    
-    const center = this.currentShape.points[0].position;
-    const radius = center.distanceTo(edgePoint);
-    
-    const geometry = new THREE.RingGeometry(radius * 0.98, radius * 1.02, 32);
-    const material = new THREE.MeshBasicMaterial({
-      color: 0x60a5fa,
-      transparent: true,
-      opacity: 0.3,
-      side: THREE.DoubleSide
-    });
-    
-    const circle = new THREE.Mesh(geometry, material);
-    circle.position.copy(center);
-    
+    this.previewLine = new THREE.Line(geometry, material);
+    this.previewLine.position.copy(center);
+
     if (this.workplane) {
-      circle.rotation.copy(this.workplane.rotation);
+      this.previewLine.rotation.copy(this.workplane.rotation);
     }
-    
-    this.scene.add(circle);
-    this.previewMesh = circle;
+
+    this.scene.add(this.previewLine);
   }
 
   private updatePolygonPreview(): void {
-    if (!this.currentShape || this.currentShape.points.length < 2) return;
-    
+    if (!this.currentShape) return;
     this.clearPreview();
-    
-    const points = this.currentShape.points.map(p => p.position);
-    const geometry = new THREE.BufferGeometry().setFromPoints(points);
+
+    const pointsWorld = this.currentShape.points.map(p => p.position.clone());
+    // For preview, close the loop visually
+    pointsWorld.push(pointsWorld[0].clone());
+
+    const geometry = new THREE.BufferGeometry().setFromPoints(pointsWorld);
     const material = new THREE.LineBasicMaterial({
       color: 0x60a5fa,
       transparent: true,
-      opacity: 0.7
+      opacity: 0.7,
+      linewidth: 2
     });
-    
+
     this.previewLine = new THREE.Line(geometry, material);
     this.scene.add(this.previewLine);
   }
 
-  private updateSplinePreview(): void {
-    if (!this.currentShape || this.currentShape.points.length < 2) return;
-    
-    this.clearPreview();
-    
-    const points = this.currentShape.points.map(p => p.position);
-    const curve = new THREE.CatmullRomCurve3(points);
-    const geometry = new THREE.BufferGeometry().setFromPoints(curve.getPoints(50));
-    const material = new THREE.LineBasicMaterial({
-      color: 0x60a5fa,
-      transparent: true,
-      opacity: 0.7
-    });
-    
-    this.previewLine = new THREE.Line(geometry, material);
-    this.scene.add(this.previewLine);
+  // Sketch helpers
+  private createSketchLine(shape: SketchShape3D): void {
+    const points = shape.points.map(p => p.position.clone());
+    if (shape.closed) {
+      points.push(points[0].clone()); // closes the loop
+    }
+  
+    const geometry = new THREE.BufferGeometry().setFromPoints(points);
+    const material = new THREE.LineBasicMaterial({ color: 0x0000ff, linewidth: 2 });
+    const line = new THREE.Line(geometry, material);
+  
+    this.scene.add(line);
+    this.sketchLines.push(line);
   }
+  
+  private createSketchCircle(shape: SketchShape3D): void {
+    const center = shape.points[0].position;
+    const edge = shape.points[1].position;
+    const radius = center.distanceTo(edge);
+
+    const curve = new THREE.EllipseCurve(
+      0, 0,
+      radius, radius,
+      0, 2 * Math.PI,
+      false,
+      0
+    );
+
+    const points = curve.getPoints(64);
+    const geometry = new THREE.BufferGeometry().setFromPoints(points);
+    const material = new THREE.LineBasicMaterial({ color: 0x0000ff, linewidth: 2 });
+
+    const circle = new THREE.Line(geometry, material);
+    circle.position.copy(center);
+
+    if (this.workplane) {
+      circle.rotation.copy(this.workplane.rotation);
+    }
+
+    this.scene.add(circle);
+    this.sketchLines.push(circle);
+  }
+
+  private addSketchPoint(position: THREE.Vector3): void {
+    const geometry = new THREE.SphereGeometry(0.02, 8, 8);
+    const material = new THREE.MeshBasicMaterial({ color: 0xff0000 });
+    const pointMesh = new THREE.Mesh(geometry, material);
+    pointMesh.position.copy(position);
+    this.scene.add(pointMesh);
+    this.sketchPoints.push(pointMesh);
+  }
+
+  // Workplane helpers
+  private createWorkplane(): boolean {
+    if (this.hasWorkplane) return false;
+
+    const geometry = new THREE.PlaneGeometry(10, 10);
+    const material = new THREE.MeshBasicMaterial({ color: 0xcccccc, side: THREE.DoubleSide, transparent: true, opacity: 0.4 });
+    this.workplane = new THREE.Mesh(geometry, material);
+    this.workplane.rotation.x = -Math.PI / 2; // horizontal plane
+    this.scene.add(this.workplane);
+
+    this.gridHelper = new THREE.GridHelper(10, 20, 0x888888, 0x444444);
+    this.gridHelper.rotation.x = -Math.PI / 2;
+    this.scene.add(this.gridHelper);
+
+    this.hasWorkplane = true;
+    console.log('Workplane created');
+    return true;
+  }
+
+  private getWorkplaneIntersection(): THREE.Vector3 | null {
+    if (!this.workplane) return null;
+
+    this.raycaster.setFromCamera(this.mouse, this.camera);
+    const intersects = this.raycaster.intersectObject(this.workplane);
+    if (intersects.length === 0) return null;
+
+    let point = intersects[0].point.clone();
+
+    if (this.snapToGrid) {
+      point = this.snapVectorToGrid(point);
+    }
+
+    return point;
+  }
+
+  private snapVectorToGrid(vec: THREE.Vector3): THREE.Vector3 {
+    const snapped = vec.clone();
+    snapped.x = Math.round(snapped.x / this.gridSize) * this.gridSize;
+    // Do NOT snap y; keep original y coordinate on the workplane
+    snapped.y = vec.y;
+    snapped.z = Math.round(snapped.z / this.gridSize) * this.gridSize;
+    return snapped;
+  }
+  
 
   private clearPreview(): void {
     if (this.previewLine) {
       this.scene.remove(this.previewLine);
+      this.previewLine.geometry.dispose();
+      (this.previewLine.material as THREE.Material).dispose();
       this.previewLine = null;
     }
     if (this.previewMesh) {
       this.scene.remove(this.previewMesh);
+      this.previewMesh.geometry.dispose();
+      (this.previewMesh.material as THREE.Material).dispose();
       this.previewMesh = null;
     }
   }
+
+  private updateMousePosition(event: MouseEvent): void {
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    this.mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+    this.mouse.y = - ((event.clientY - rect.top) / rect.height) * 2 + 1;
+  
+    console.log('Mouse coords normalized:', this.mouse.x, this.mouse.y);
+  }
+  
+  private worldToWorkplane(worldPos: THREE.Vector3): THREE.Vector3 {
+    if (!this.workplane) return worldPos.clone();
+    const local = worldPos.clone();
+    this.workplane.worldToLocal(local);
+    return local;
+  }
+
+  private workplaneToWorld(localPos: THREE.Vector3): THREE.Vector3 {
+    if (!this.workplane) return localPos.clone();
+    const world = localPos.clone();
+    this.workplane.localToWorld(world);
+    return world;
+  }
+
+  // Other helpers like reset, clear shapes, set tool etc can be added here
+
+
 
   // Public methods
   setTool(tool: string): void {
     this.currentTool = tool;
     this.finishCurrentSketch();
+    console.log('Set tool to:', tool);
   }
 
   setSketchMode(mode: 'surface' | 'plane' | 'free'): void {
     this.sketchMode = mode;
     this.clearWorkplane();
+    console.log('Set sketch mode to:', mode);
   }
 
   setSnapToGrid(snap: boolean): void {
@@ -620,13 +617,18 @@ export class SketchEngine3D {
 
   setGridSize(size: number): void {
     this.gridSize = size;
-    if (this.gridHelper) {
+    if (this.gridHelper && this.workplane) {
       this.scene.remove(this.gridHelper);
-      // Recreate grid with new size
-      if (this.workplane && this.workplaneVisible) {
-        this.gridHelper = new THREE.GridHelper(10, 10 / this.gridSize, 0x4ade80, 0x4ade80);
-        this.gridHelper.position.copy(this.workplane.position);
-        this.gridHelper.rotation.copy(this.workplane.rotation);
+      
+      this.gridHelper = new THREE.GridHelper(10, 10 / this.gridSize, 0x4ade80, 0x4ade80);
+      this.gridHelper.position.copy(this.workplane.position);
+      this.gridHelper.rotation.copy(this.workplane.rotation);
+      
+      const gridMaterial = this.gridHelper.material as THREE.LineBasicMaterial;
+      gridMaterial.transparent = true;
+      gridMaterial.opacity = 0.3;
+      
+      if (this.workplaneVisible) {
         this.scene.add(this.gridHelper);
       }
     }
@@ -637,7 +639,7 @@ export class SketchEngine3D {
     
     if (this.workplane) {
       const material = this.workplane.material as THREE.MeshBasicMaterial;
-      material.opacity = visible ? 0.2 : 0;
+      material.opacity = visible ? 0.15 : 0;
     }
     
     if (this.gridHelper) {
@@ -646,17 +648,15 @@ export class SketchEngine3D {
   }
 
   finishCurrentSketch(): void {
-    if (this.currentShape) {
-      if (this.currentTool === 'polygon' && this.currentShape.points.length >= 3) {
-        this.finishPolygon();
-      } else if (this.currentTool === 'spline' && this.currentShape.points.length >= 2) {
-        this.createSketchLine(this.currentShape);
-        this.shapes.push(this.currentShape);
-        this.currentShape = null;
-      }
+    if (this.currentShape && this.currentTool === 'polygon' && this.currentShape.points.length >= 3) {
+      this.finishPolygon();
     }
+    
     this.clearPreview();
     this.isDrawing = false;
+    this.isDragging = false;
+    this.startPoint = null;
+    this.currentShape = null;
   }
 
   getShapes(): SketchShape3D[] {
@@ -667,16 +667,35 @@ export class SketchEngine3D {
     this.shapes = [];
     this.currentShape = null;
     this.isDrawing = false;
+    this.isDragging = false;
+    this.startPoint = null;
     
-    // Remove all sketch lines and meshes
-    this.sketchLines.forEach(line => this.scene.remove(line));
+    // Remove all sketch elements
+    this.sketchLines.forEach(line => {
+      this.scene.remove(line);
+      line.geometry.dispose();
+      (line.material as THREE.Material).dispose();
+    });
     this.sketchLines = [];
     
-    this.sketchMeshes.forEach(mesh => this.scene.remove(mesh));
+    this.sketchMeshes.forEach(mesh => {
+      this.scene.remove(mesh);
+      mesh.geometry.dispose();
+      (mesh.material as THREE.Material).dispose();
+    });
     this.sketchMeshes = [];
+    
+    this.sketchPoints.forEach(point => {
+      this.scene.remove(point);
+      point.geometry.dispose();
+      (point.material as THREE.Material).dispose();
+    });
+    this.sketchPoints = [];
     
     this.clearPreview();
     this.clearWorkplane();
+    
+    console.log('Cleared all sketches');
   }
 
   dispose(): void {

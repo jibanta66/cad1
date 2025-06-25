@@ -1,5 +1,22 @@
 import * as THREE from 'three';
-import { Vec3 } from '../utils/math';
+import { Vec3 } from '../utils/math'; // Assuming Vec3 is defined in this path
+
+// Define a basic Vec3 class if it's not available, for standalone functionality.
+// If you have this defined elsewhere, you can remove this class.
+if (typeof Vec3 === 'undefined') {
+    class Vec3_Class {
+        x: number;
+        y: number;
+        z: number;
+        constructor(x = 0, y = 0, z = 0) {
+            this.x = x;
+            this.y = y;
+            this.z = z;
+        }
+    }
+    (globalThis as any).Vec3 = Vec3_Class;
+}
+
 
 export interface RenderObject {
   id: string;
@@ -11,6 +28,7 @@ export interface RenderObject {
   selected: boolean;
   visible: boolean;
   originalMaterial?: THREE.Material;
+  meshData?: any;
 }
 
 export interface LightSettings {
@@ -111,9 +129,19 @@ export class ThreeRenderer {
     this.createAxes();
   }
 
+  /**
+   * Clears any existing grids and creates a single XZ grid helper based on grid settings.
+   * The XZ grid lies flat on the "floor" of the scene.
+   */
   private createGridHelpers(): void {
+    // Clear any existing grid helpers from the scene and the local array
     this.gridHelpers.forEach(grid => this.scene.remove(grid));
     this.gridHelpers = [];
+
+    // If the grid is not supposed to be visible, we stop here.
+    if (!this.gridSettings.visible) {
+      return;
+    }
 
     const size = this.gridSettings.size * 2;
     const divisions = this.gridSettings.divisions;
@@ -123,31 +151,15 @@ export class ThreeRenderer {
       this.gridSettings.color.z
     );
 
-    const createGridHelper = () => {
-      const grid = new THREE.GridHelper(size, divisions, color, color);
-      const material = grid.material as THREE.LineBasicMaterial;
-      material.opacity = this.gridSettings.opacity;
-      material.transparent = true;
-      grid.visible = this.gridSettings.visible;
-      return grid;
-    };
+    // Create only the XZ plane grid (the "floor" grid)
+    const gridXZ = new THREE.GridHelper(size, divisions, color, color);
+    const material = gridXZ.material as THREE.LineBasicMaterial;
+    material.opacity = this.gridSettings.opacity;
+    material.transparent = true;
+    gridXZ.visible = this.gridSettings.visible;
 
-    // Top (XY plane)
-    const gridXY = createGridHelper();
-    gridXY.rotation.x = Math.PI / 2;
-    this.scene.add(gridXY);
-    this.gridHelpers.push(gridXY);
-
-    // Front (XZ plane)
-    const gridXZ = createGridHelper();
     this.scene.add(gridXZ);
     this.gridHelpers.push(gridXZ);
-
-    // Right (YZ plane)
-    const gridYZ = createGridHelper();
-    gridYZ.rotation.z = Math.PI / 2;
-    this.scene.add(gridYZ);
-    this.gridHelpers.push(gridYZ);
   }
 
   private createAxes(): void {
@@ -281,7 +293,7 @@ export class ThreeRenderer {
   }
 
   updateGridSettings(settings: GridSettings): void {
-    this.gridSettings = { ...settings };
+    this.gridSettings = { ...this.gridSettings, ...settings };
     this.createGridHelpers();
     this.createAxes();
   }
@@ -377,9 +389,9 @@ export class ThreeRenderer {
 
     const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
     const intersectPoint = new THREE.Vector3();
-    const intersect = this.raycaster.ray.intersectPlane(plane, intersectPoint);
+    this.raycaster.ray.intersectPlane(plane, intersectPoint);
 
-    if (intersect) {
+    if (intersectPoint) {
       return new Vec3(intersectPoint.x, intersectPoint.y, intersectPoint.z);
     }
 

@@ -1,4 +1,3 @@
-// Measurement utilities for CAD
 import { Vec3 } from './math';
 
 export interface Measurement {
@@ -10,6 +9,11 @@ export interface Measurement {
   label: string;
   timestamp: number;
 }
+
+// You can also inject this from UI if needed
+const UNIT_SCALE = 1; // 1 Three.js unit = 1 mm
+const UNIT_LABEL = 'mm';
+const UNIT_AREA_LABEL = 'mm²';
 
 export class MeasurementEngine {
   private measurements: Measurement[] = [];
@@ -44,8 +48,7 @@ export class MeasurementEngine {
       case 'area':
         // Area measurement requires at least 3 points and manual completion
         if (this.tempPoints.length >= 3) {
-          // Return null to indicate more points can be added
-          return null;
+          return null; // Wait for finishAreaMeasurement
         }
         break;
     }
@@ -65,35 +68,35 @@ export class MeasurementEngine {
 
   private createDistanceMeasurement(points: Vec3[]): Measurement {
     const [p1, p2] = points;
-    const distance = Math.sqrt(
+    const rawDistance = Math.sqrt(
       Math.pow(p2.x - p1.x, 2) +
       Math.pow(p2.y - p1.y, 2) +
       Math.pow(p2.z - p1.z, 2)
     );
 
+    const scaledDistance = rawDistance * UNIT_SCALE;
+
     return {
       id: `distance-${Date.now()}`,
       type: 'distance',
       points: [...points],
-      value: distance,
-      unit: 'units',
-      label: `Distance: ${distance.toFixed(2)} units`,
+      value: scaledDistance,
+      unit: UNIT_LABEL,
+      label: `Distance: ${scaledDistance.toFixed(2)} ${UNIT_LABEL}`,
       timestamp: Date.now()
     };
   }
 
   private createAngleMeasurement(points: Vec3[]): Measurement {
     const [p1, p2, p3] = points;
-    
-    // Create vectors from center point (p2) to the other points
+
     const v1 = Vec3.subtract(p1, p2);
     const v2 = Vec3.subtract(p3, p2);
-    
-    // Calculate angle using dot product
+
     const dot = Vec3.dot(v1, v2);
-    const mag1 = Math.sqrt(v1.x * v1.x + v1.y * v1.y + v1.z * v1.z);
-    const mag2 = Math.sqrt(v2.x * v2.x + v2.y * v2.y + v2.z * v2.z);
-    
+    const mag1 = Math.sqrt(Vec3.dot(v1, v1));
+    const mag2 = Math.sqrt(Vec3.dot(v2, v2));
+
     const angle = Math.acos(Math.max(-1, Math.min(1, dot / (mag1 * mag2))));
     const angleDegrees = (angle * 180) / Math.PI;
 
@@ -109,7 +112,7 @@ export class MeasurementEngine {
   }
 
   private createAreaMeasurement(points: Vec3[]): Measurement {
-    // Calculate area using shoelace formula (for 2D projection)
+    // Project to XY plane and apply shoelace formula
     let area = 0;
     const n = points.length;
 
@@ -119,15 +122,16 @@ export class MeasurementEngine {
       area -= points[j].x * points[i].y;
     }
 
-    area = Math.abs(area) / 2;
+    const rawArea = Math.abs(area) / 2;
+    const scaledArea = rawArea * UNIT_SCALE * UNIT_SCALE;
 
     return {
       id: `area-${Date.now()}`,
       type: 'area',
       points: [...points],
-      value: area,
-      unit: 'square units',
-      label: `Area: ${area.toFixed(2)} sq units`,
+      value: scaledArea,
+      unit: UNIT_AREA_LABEL,
+      label: `Area: ${scaledArea.toFixed(2)} ${UNIT_AREA_LABEL}`,
       timestamp: Date.now()
     };
   }

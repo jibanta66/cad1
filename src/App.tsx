@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useMemo } from 'react';
 import { Viewport3D } from './components/Viewport3D';
 import { Toolbar } from './components/Toolbar';
 import { PropertiesPanel } from './components/PropertiesPanel';
@@ -16,8 +16,9 @@ import { OffsetEngine } from './three/OffsetEngine';
 import { SketchShape3D } from './utils/sketch3d';
 import { MeasurementEngine, Measurement } from './utils/measurement';
 import { Vec3 } from './utils/math';
-import { Save, Download, Settings, Layers } from 'lucide-react';
+import { Save, Download, Settings, Layers ,Upload } from 'lucide-react';
 import * as THREE from 'three';
+import { FileImport } from './components/FileImport';
 
 function App() {
   const [objects, setObjects] = useState<RenderObject[]>([]);
@@ -27,6 +28,7 @@ function App() {
   
   // Panel states
   const [sketchPanelOpen, setSketchPanelOpen] = useState(false);
+  const [fileImportOpen, setFileImportOpen] = useState(false);
   const [lightingPanelOpen, setLightingPanelOpen] = useState(false);
   const [gridPanelOpen, setGridPanelOpen] = useState(false);
   const [measurementPanelOpen, setMeasurementPanelOpen] = useState(false);
@@ -118,8 +120,52 @@ function App() {
     setObjects(prev => [...prev, newObject]);
     setSelectedObjectId(newObject.id);
   }, []);
+  const handleFilesImported = useCallback((importedFiles: ImportedFile[]) => {
+    const newObjects: RenderObject[] = [];
+
+    importedFiles.forEach((file, index) => {
+      const color = getRandomColor();
+      const material = file.material || new THREE.MeshPhongMaterial({
+        color: new THREE.Color(color.x, color.y, color.z),
+        side: THREE.DoubleSide
+      });
+      const mesh = new THREE.Mesh(file.geometry, material);
+
+      const gridSize = Math.ceil(Math.sqrt(importedFiles.length));
+      const x = (index % gridSize) * 3 - (gridSize - 1) * 1.5;
+      const z = Math.floor(index / gridSize) * 3 - (Math.floor((importedFiles.length - 1) / gridSize)) * 1.5;
+
+      const newObject: RenderObject = {
+        id: generateId('imported'),
+        mesh,
+        position: new Vec3(x, 0, z),
+        rotation: new Vec3(0, 0, 0),
+        scale: new Vec3(1, 1, 1),
+        color,
+        selected: false,
+        visible: true
+      };
+
+      newObjects.push(newObject);
+    });
+
+    setObjects(prev => [...prev, ...newObjects]);
+
+    if (newObjects.length > 0) {
+      setSelectedObjectId(newObjects[0].id);
+    }
+
+    setFileImportOpen(false);
+  }, []);
 
   const handleSketchExtrude = useCallback((shapes: SketchShape3D[]) => {
+    console.log('Extrude called with shapes:', shapes);
+    
+    if (shapes.length === 0) {
+      console.warn('No shapes to extrude');
+      return;
+    }
+
     const extrusionSettings = {
       depth: 2,
       bevelEnabled: true,
@@ -128,38 +174,42 @@ function App() {
       bevelSegments: 3
     };
 
-    // Convert 3D sketch shapes to 2D for extrusion
-    const sketch2D = shapes.map(shape => ({
-      type: shape.type,
-      points: shape.points.map(p => ({ x: p.position.x * 50, y: p.position.z * 50, id: p.id })),
-      id: shape.id,
-      closed: shape.closed
-    }));
+    try {
+      // Use the shapes directly - no conversion needed
+      const geometry = ExtrusionEngine.extrudeSketch(shapes, extrusionSettings);
+      const color = getRandomColor();
+      const material = new THREE.MeshPhongMaterial({
+        color: new THREE.Color(color.x, color.y, color.z)
+      });
 
-    const geometry = ExtrusionEngine.extrudeSketch(sketch2D, extrusionSettings);
-    const color = getRandomColor();
-    const material = new THREE.MeshPhongMaterial({
-      color: new THREE.Color(color.x, color.y, color.z)
-    });
+      const mesh = new THREE.Mesh(geometry, material);
+      
+      const newObject: RenderObject = {
+        id: generateId('extruded'),
+        mesh,
+        position: new Vec3(0, 0, 0),
+        rotation: new Vec3(0, 0, 0),
+        scale: new Vec3(1, 1, 1),
+        color,
+        selected: false,
+        visible: true
+      };
 
-    const mesh = new THREE.Mesh(geometry, material);
-    
-    const newObject: RenderObject = {
-      id: generateId('extruded'),
-      mesh,
-      position: new Vec3(0, 0, 0),
-      rotation: new Vec3(0, 0, 0),
-      scale: new Vec3(1, 1, 1),
-      color,
-      selected: false,
-      visible: true
-    };
-
-    setObjects(prev => [...prev, newObject]);
-    setSelectedObjectId(newObject.id);
-    setSketchMode(false);
-    setSketchPanelOpen(false);
-  }, []);
+      setObjects(prev => [...prev, newObject]);
+      setSelectedObjectId(newObject.id);
+      setSketchMode(false);
+      setSketchPanelOpen(false);
+      
+      // Clear sketch after successful extrusion
+      if (sketchEngineRef) {
+        sketchEngineRef.clear();
+      }
+      
+      console.log('Extrusion successful, object created:', newObject.id);
+    } catch (error) {
+      console.error('Failed to extrude sketch:', error);
+    }
+  }, [sketchEngineRef]);
 
   const deleteSelected = useCallback(() => {
     if (selectedObjectId) {
@@ -207,28 +257,48 @@ function App() {
   const handleOffsetFace = useCallback(() => {
     if (!selectedObjectId) return;
     
-    const selectedObj = objects.find(obj => obj.id === selectedObjectId);
-    if (!selectedObj) return;
+    setObjects(prev => prev.map(obj => {
+      if (obj.id === selectedObjectId) {
+        // Dispose old geometry to free up memory
+        obj.mesh.geometry.dispose(); 
+        
+        // Create new geometry
+        const newGeometry = OffsetEngine.offsetFace(obj.mesh.geometry, 0, 0.2);
+        
+        // Create a new mesh instance with the updated geometry
+        const newMesh = new THREE.Mesh(newGeometry, obj.mesh.material);
+        newMesh.castShadow = true;
+        newMesh.receiveShadow = true;
+        newMesh.userData = { id: obj.id }; // Preserve user data
 
-    const newGeometry = OffsetEngine.offsetFace(selectedObj.mesh.geometry, 0, 0.2);
-    selectedObj.mesh.geometry.dispose();
-    selectedObj.mesh.geometry = newGeometry;
-
-    setObjects(prev => [...prev]);
-  }, [selectedObjectId, objects]);
+        return { ...obj, mesh: newMesh }; // Return new object with updated mesh
+      }
+      return obj;
+    }));
+  }, [selectedObjectId]);
 
   const handleOffsetBody = useCallback(() => {
     if (!selectedObjectId) return;
     
-    const selectedObj = objects.find(obj => obj.id === selectedObjectId);
-    if (!selectedObj) return;
+    setObjects(prev => prev.map(obj => {
+      if (obj.id === selectedObjectId) {
+        // Dispose old geometry to free up memory
+        obj.mesh.geometry.dispose();
 
-    const newGeometry = OffsetEngine.offsetBody(selectedObj.mesh.geometry, 0.1);
-    selectedObj.mesh.geometry.dispose();
-    selectedObj.mesh.geometry = newGeometry;
+        // Create new geometry
+        const newGeometry = OffsetEngine.offsetBody(obj.mesh.geometry, 0.1);
 
-    setObjects(prev => [...prev]);
-  }, [selectedObjectId, objects]);
+        // Create a new mesh instance with the updated geometry
+        const newMesh = new THREE.Mesh(newGeometry, obj.mesh.material);
+        newMesh.castShadow = true;
+        newMesh.receiveShadow = true;
+        newMesh.userData = { id: obj.id }; // Preserve user data
+        
+        return { ...obj, mesh: newMesh }; // Return new object with updated mesh
+      }
+      return obj;
+    }));
+  }, [selectedObjectId]);
 
   const handleMirror = useCallback((axis: 'x' | 'y' | 'z') => {
     if (!selectedObjectId) return;
@@ -338,7 +408,14 @@ function App() {
     }
     if (settings.finishSketch && sketchEngineRef) {
       sketchEngineRef.finishSketch();
+    
+      if (sketchEngineRef.getShapes) {
+        const newShapes = sketchEngineRef.getShapes();
+        setSketchShapes(newShapes);
+        console.log('Updated sketch shapes:', newShapes);
+      }
     }
+    
     if (settings.getShapes) {
       // Store reference to sketch engine methods
       setSketchEngineRef({
@@ -349,7 +426,11 @@ function App() {
     }
   }, [sketchEngineRef]);
 
-  const selectedObject = selectedObjectId ? objects.find(obj => obj.id === selectedObjectId) || null : null;
+  // Memoize selectedObject lookup to prevent unnecessary re-calculations
+  const selectedObject = useMemo(() => 
+    selectedObjectId ? objects.find(obj => obj.id === selectedObjectId) || null : null,
+    [selectedObjectId, objects]
+  );
 
   const exportScene = useCallback(() => {
     const sceneData = {
@@ -384,7 +465,7 @@ function App() {
   }, [objects, lightSettings, gridSettings, measurements]);
 
   return (
-    <div className="h-screen flex flex-col bg-gray-900 text-white">
+    <div className="min-h-screen overflow-y-auto bg-gray-900 text-white">
       {/* Keyboard Shortcuts Handler */}
       <KeyboardShortcuts
         onTransformModeChange={setTransformMode}
@@ -418,6 +499,12 @@ function App() {
           </div>
           
           <div className="flex items-center gap-2">
+          <button
+              onClick={() => setFileImportOpen(true)}
+              className="flex items-center gap-2 px-3 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors text-sm"
+            >
+              <Upload size={16} /> Import 3D File
+            </button>
             <button 
               onClick={exportScene}
               className="flex items-center gap-2 px-3 py-2 bg-green-600 hover:bg-green-700 rounded-lg transition-colors text-sm"
@@ -447,6 +534,7 @@ function App() {
             onAddPrimitive={addPrimitive}
             onDeleteSelected={deleteSelected}
             onOpenSketch={handleOpenSketch}
+            onOpenImport={() => setFileImportOpen(true)}
             onToggleMeasurement={() => setMeasurementPanelOpen(!measurementPanelOpen)}
             onToggleLighting={() => setLightingPanelOpen(!lightingPanelOpen)}
             onToggleGrid={() => setGridPanelOpen(!gridPanelOpen)}
@@ -533,6 +621,11 @@ function App() {
         </div>
       </div>
 
+      <FileImport
+  isOpen={fileImportOpen}
+  onClose={() => setFileImportOpen(false)}
+  onFilesImported={handleFilesImported}
+/>
       {/* Context Toolbar */}
       {!sketchMode && (
         <ContextToolbar
@@ -587,6 +680,21 @@ function App() {
         workplaneVisible={sketchSettings.workplaneVisible}
         currentShapes={sketchEngineRef ? sketchEngineRef.getShapes() : []}
       />
+
+      {/* Debug: Current Sketch Shapes */}
+      {sketchShapes.length > 0 && (
+        <div className="fixed bottom-4 right-4 bg-gray-800 border border-gray-600 rounded-lg p-4 max-w-sm">
+          <h3 className="text-sm font-semibold text-gray-300 mb-2">Current Sketch Shapes:</h3>
+          <div className="text-xs text-gray-400 space-y-1 max-h-32 overflow-y-auto">
+            {sketchShapes.map(shape => (
+              <div key={shape.id} className="flex justify-between">
+                <span>{shape.type.toUpperCase()}</span>
+                <span>{shape.points.length} pts</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

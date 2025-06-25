@@ -1,0 +1,218 @@
+import React, { useState, useCallback } from 'react';
+import { Viewport3D } from './components/Viewport3D';
+import { AdvancedSketchPanel } from './components/AdvancedSketchPanel';
+import { ExtrusionOptions } from './components/ExtrusionDialog';
+import { ExtrudeGeometry } from './utils/extrudeGeometry';
+import { SketchShape3D } from './utils/sketch3d';
+import { Vec3 } from './utils/math';
+import { RenderObject, LightSettings, GridSettings } from './three/ThreeRenderer';
+import * as THREE from 'three';
+
+function App() {
+  const [objects, setObjects] = useState<RenderObject[]>([]);
+  const [selectedObjectId, setSelectedObjectId] = useState<string | null>(null);
+  const [transformMode, setTransformMode] = useState<'translate' | 'rotate' | 'scale'>('translate');
+  const [sketchMode, setSketchMode] = useState(false);
+  const [sketchTool, setSketchTool] = useState('line');
+  const [sketchModeType, setSketchModeType] = useState<'surface' | 'plane' | 'free'>('surface');
+  const [sketchSettings, setSketchSettings] = useState({
+    snapToGrid: true,
+    gridSize: 0.5,
+    workplaneVisible: true
+  });
+  const [currentShapes, setCurrentShapes] = useState<SketchShape3D[]>([]);
+  const [sketchAPI, setSketchAPI] = useState<any>(null);
+
+  const lightSettings: LightSettings = {
+    ambient: { intensity: 0.4, color: 0x404040 },
+    directional: { intensity: 0.8, color: 0xffffff, position: new Vec3(10, 10, 5) },
+    point: { intensity: 0.6, color: 0xffffff, position: new Vec3(-10, 10, -5) }
+  };
+
+  const gridSettings: GridSettings = {
+    visible: true,
+    size: 10,
+    divisions: 20,
+    snapEnabled: true,
+    snapSize: 0.5
+  };
+
+  const handleObjectSelect = useCallback((id: string | null) => {
+    setSelectedObjectId(id);
+  }, []);
+
+  const handleObjectTransform = useCallback((id: string, transform: { position?: Vec3; rotation?: Vec3; scale?: Vec3 }) => {
+    setObjects(prev => prev.map(obj => 
+      obj.id === id 
+        ? { 
+            ...obj, 
+            position: transform.position || obj.position,
+            rotation: transform.rotation || obj.rotation,
+            scale: transform.scale || obj.scale
+          }
+        : obj
+    ));
+  }, []);
+
+  const handleSketchComplete = useCallback((shapes: SketchShape3D[]) => {
+    setCurrentShapes(shapes);
+  }, []);
+
+  const handleSketchSettingsChange = useCallback((settings: any) => {
+    if (settings.clearSketch && sketchAPI) {
+      sketchAPI.clear();
+      setCurrentShapes([]);
+    }
+    
+    if (settings.finishSketch && sketchAPI) {
+      sketchAPI.finishSketch();
+      const shapes = sketchAPI.getShapes();
+      setCurrentShapes(shapes);
+    }
+
+    if (settings.snapToGrid !== undefined) {
+      setSketchSettings(prev => ({ ...prev, snapToGrid: settings.snapToGrid }));
+    }
+    
+    if (settings.gridSize !== undefined) {
+      setSketchSettings(prev => ({ ...prev, gridSize: settings.gridSize }));
+    }
+    
+    if (settings.workplaneVisible !== undefined) {
+      setSketchSettings(prev => ({ ...prev, workplaneVisible: settings.workplaneVisible }));
+    }
+
+    // Store the sketch API reference
+    if (settings.getShapes && settings.clear && settings.finishSketch) {
+      setSketchAPI(settings);
+    }
+  }, [sketchAPI]);
+
+  const handleExtrude = useCallback((shapes: SketchShape3D[], options: ExtrusionOptions) => {
+    try {
+      console.log('Extruding shapes:', shapes, 'with options:', options);
+      
+      const geometries = ExtrudeGeometry.createExtrudedGeometry(shapes, options);
+      
+      if (geometries.length === 0) {
+        console.warn('No geometries created from shapes');
+        return;
+      }
+
+      // Create new 3D objects from extruded geometries
+      geometries.forEach((geometry, index) => {
+        const newObject: RenderObject = {
+          id: `extruded-${Date.now()}-${index}`,
+          mesh: { geometry },
+          position: new Vec3(0, 0, 0),
+          rotation: new Vec3(0, 0, 0),
+          scale: new Vec3(1, 1, 1),
+          color: 0x4f46e5, // Purple color
+          visible: true
+        };
+
+        setObjects(prev => [...prev, newObject]);
+      });
+
+      // Clear the sketch after successful extrusion
+      if (sketchAPI) {
+        sketchAPI.clear();
+        setCurrentShapes([]);
+      }
+
+      console.log(`Successfully created ${geometries.length} extruded object(s)`);
+    } catch (error) {
+      console.error('Failed to extrude shapes:', error);
+    }
+  }, [sketchAPI]);
+
+  // Add some default objects for testing
+  React.useEffect(() => {
+    // Create a default cube
+    const cubeGeometry = new THREE.BoxGeometry(2, 2, 2);
+    const defaultCube: RenderObject = {
+      id: 'default-cube',
+      mesh: { geometry: cubeGeometry },
+      position: new Vec3(3, 1, 0),
+      rotation: new Vec3(0, 0, 0),
+      scale: new Vec3(1, 1, 1),
+      color: 0x00ff00,
+      visible: true
+    };
+
+    setObjects([defaultCube]);
+  }, []);
+
+  return (
+    <div className="w-screen h-screen bg-gray-900 flex">
+      {/* Main Viewport */}
+      <div className="flex-1 relative">
+        <Viewport3D
+          objects={objects}
+          selectedObjectId={selectedObjectId}
+          onObjectSelect={handleObjectSelect}
+          lightSettings={lightSettings}
+          gridSettings={gridSettings}
+          transformMode={transformMode}
+          onObjectTransform={handleObjectTransform}
+          sketchMode={sketchMode}
+          onSketchComplete={handleSketchComplete}
+          sketchTool={sketchTool}
+          sketchModeType={sketchModeType}
+          sketchSettings={sketchSettings}
+          onSketchSettingsChange={handleSketchSettingsChange}
+        />
+
+        {/* Floating Controls */}
+        <div className="absolute bottom-4 right-4 flex flex-col gap-2">
+          <button
+            onClick={() => setSketchMode(!sketchMode)}
+            className={`px-4 py-2 rounded-lg font-medium transition-colors ${
+              sketchMode 
+                ? 'bg-green-600 hover:bg-green-700 text-white' 
+                : 'bg-gray-700 hover:bg-gray-600 text-white'
+            }`}
+          >
+            {sketchMode ? 'Exit Sketch' : 'Start Sketch'}
+          </button>
+
+          {!sketchMode && (
+            <div className="flex gap-1">
+              {(['translate', 'rotate', 'scale'] as const).map(mode => (
+                <button
+                  key={mode}
+                  onClick={() => setTransformMode(mode)}
+                  className={`px-3 py-2 rounded text-xs font-medium transition-colors ${
+                    transformMode === mode
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-gray-700 hover:bg-gray-600 text-white'
+                  }`}
+                >
+                  {mode.charAt(0).toUpperCase()}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Sketch Panel */}
+      <AdvancedSketchPanel
+        isOpen={sketchMode}
+        onClose={() => setSketchMode(false)}
+        onExtrude={handleExtrude}
+        onToolChange={setSketchTool}
+        onModeChange={setSketchModeType}
+        onSettingsChange={handleSketchSettingsChange}
+        activeTool={sketchTool}
+        sketchMode={sketchModeType}
+        snapToGrid={sketchSettings.snapToGrid}
+        gridSize={sketchSettings.gridSize}
+        workplaneVisible={sketchSettings.workplaneVisible}
+        currentShapes={currentShapes}
+      />
+    </div>
+  );
+}
+
+export default App;
