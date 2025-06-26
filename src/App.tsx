@@ -628,7 +628,7 @@ function App() {
           <Viewport3D
             objects={objects}
             selectedObjectId={selectedObjectId}
-            onObjectSelect={selectObject}
+            onObjectSelect={setSelectedObjectId}
             lightSettings={lightSettings}
             gridSettings={gridSettings}
             onMeasurementPoint={handleMeasurementPoint}
@@ -691,7 +691,8 @@ function App() {
           )}
 
           {/* Scene Hierarchy */}
-          <div className={`${measurementPanelOpen || lightingPanelOpen || gridPanelOpen ? 'h-1/2' : 'h-1/2'} border-b border-gray-700`}>
+          <div className={`${measurementPanelOpen || lightingPanelOpen || gridPanelOpen ? 'h-1/2' : 'h-1/2'} border-b border-gray-700 overflow-y-auto`}>
+  
             <SceneHierarchy
               objects={objects}
               selectedObjectId={selectedObjectId}
@@ -701,7 +702,7 @@ function App() {
           </div>
 
           {/* Properties Panel */}
-          <div className={`${measurementPanelOpen || lightingPanelOpen || gridPanelOpen ? 'h-1/2' : 'h-1/2'}`}>
+          <div className={`${measurementPanelOpen || lightingPanelOpen || gridPanelOpen ? 'h-1/2' : 'h-1/2'} overflow-y-auto`}>
             <PropertiesPanel
               selectedObject={selectedObject}
               onObjectUpdate={updateObject}
