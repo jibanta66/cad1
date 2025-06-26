@@ -16,7 +16,6 @@ export interface SketchShape3D {
   normal?: THREE.Vector3;
 }
 
-
 export class SketchEngine3D {
   private scene: THREE.Scene;
   private camera: THREE.PerspectiveCamera;
@@ -47,6 +46,10 @@ export class SketchEngine3D {
   private isDragging: boolean = false;
   private hasWorkplane: boolean = false;
 
+  // Multi-line drawing state for connected lines
+  private multiLinePoints: THREE.Vector3[] = [];
+  private isMultiLineMode: boolean = false;
+
   private clearWorkplane(): void {
     if (this.workplane) {
       this.scene.remove(this.workplane);
@@ -64,7 +67,6 @@ export class SketchEngine3D {
     this.hasWorkplane = false;
     console.log('Workplane cleared');
   }
-  
 
   constructor(scene: THREE.Scene, camera: THREE.PerspectiveCamera, renderer: THREE.WebGLRenderer) {
     this.scene = scene;
@@ -75,102 +77,107 @@ export class SketchEngine3D {
   }
 
   // Main event handlers
- // Updated handleClick to ignore clicks if dragging (important for rectangles/circles)
-handleClick(event: MouseEvent): boolean {
-  this.updateMousePosition(event);
+  handleClick(event: MouseEvent): boolean {
+    this.updateMousePosition(event);
 
-  // Ignore click if currently dragging (to avoid conflicts)
-  if (this.isDragging) return false;
+    // Ignore click if currently dragging (to avoid conflicts)
+    if (this.isDragging) return false;
 
-  if (!this.hasWorkplane) {
-    return this.createWorkplane();
+    if (!this.hasWorkplane) {
+      return this.createWorkplane();
+    }
+
+    switch (this.currentTool) {
+      case 'line':
+        return this.handleLineClick();
+      case 'rectangle':
+        // rectangle uses drag only, ignore click
+        return false;
+      case 'circle':
+        // circle uses drag only, ignore click
+        return false;
+      case 'polygon':
+        return this.handlePolygonClick();
+      default:
+        return false;
+    }
   }
 
-  switch (this.currentTool) {
-    case 'line':
-      return this.handleLineClick();
-    case 'rectangle':
-      // rectangle uses drag only, ignore click
-      return false;
-    case 'circle':
-      // circle uses drag only, ignore click
-      return false;
-    case 'polygon':
-      return this.handlePolygonClick();
-    default:
-      return false;
-  }
-  
-}
-// Start dragging for rectangle or circle
-handleMouseDown(event: MouseEvent): boolean {
-  if (event.button !== 0 || !this.hasWorkplane) return false;
+  // Start dragging for rectangle or circle
+  handleMouseDown(event: MouseEvent): boolean {
+    if (event.button !== 0 || !this.hasWorkplane) return false;
 
-  this.updateMousePosition(event);
+    this.updateMousePosition(event);
 
-  if (this.currentTool === 'rectangle' || this.currentTool === 'circle') {
-    return this.startDragOperation();
+    if (this.currentTool === 'rectangle' || this.currentTool === 'circle') {
+      return this.startDragOperation();
+    }
+
+    return false;
   }
 
-  return false;
-}
+  // Update preview during dragging
+  handleMouseMove(event: MouseEvent): boolean {
+    this.updateMousePosition(event);
 
-// Update preview during dragging
-handleMouseMove(event: MouseEvent): boolean {
-  this.updateMousePosition(event);
+    if (this.isDragging && this.hasWorkplane) {
+      this.updateDragPreview();
+      return true;
+    }
 
-  if (this.isDragging && this.hasWorkplane) {
-    this.updateDragPreview();
-    return true;
+    // Show preview for multi-line mode
+    if (this.isMultiLineMode && this.multiLinePoints.length > 0) {
+      this.updateMultiLinePreview();
+      return true;
+    }
+
+    return false;
   }
 
-  return false;
-}
-
-// Finish drawing shape on mouse up if dragging
-handleMouseUp(event: MouseEvent): boolean {
-  if (this.isDragging && this.hasWorkplane) {
-    this.finishDragOperation();
-    return true;
+  // Finish drawing shape on mouse up if dragging
+  handleMouseUp(event: MouseEvent): boolean {
+    if (this.isDragging && this.hasWorkplane) {
+      this.finishDragOperation();
+      return true;
+    }
+    return false;
   }
-  return false;
-}
 
   handleDoubleClick(event: MouseEvent): boolean {
     if (this.currentTool === 'polygon' && this.currentShape) {
       this.finishPolygon();
       return true;
     }
+    
+    // Double-click to finish multi-line drawing
+    if (this.currentTool === 'line' && this.isMultiLineMode && this.multiLinePoints.length >= 2) {
+      this.finishMultiLine();
+      return true;
+    }
+    
     return false;
   }
 
-  
   // Tool-specific handlers
   private handleLineClick(): boolean {
     const point = this.getWorkplaneIntersection();
     if (!point) return false;
 
-    if (!this.isDrawing) {
-      this.startPoint = point.clone();
-      this.isDrawing = true;
+    if (!this.isMultiLineMode) {
+      // Start multi-line mode
+      this.isMultiLineMode = true;
+      this.multiLinePoints = [point.clone()];
       this.addSketchPoint(point);
-      console.log('Started line at:', point);
+      console.log('Started multi-line drawing at:', point);
     } else {
-      this.finishLine(point);
-      this.isDrawing = false;
-      this.startPoint = null;
+      // Add point to multi-line
+      this.multiLinePoints.push(point.clone());
+      this.addSketchPoint(point);
+      this.updateMultiLinePreview();
+      console.log('Added point to multi-line:', point);
     }
+    
     return true;
-  }
-
-  private handleRectangleClick(): boolean {
-    // Clicks ignored; rectangle uses drag
-    return false;
-  }
-
-  private handleCircleClick(): boolean {
-    // Clicks ignored; circle uses drag
-    return false;
   }
 
   private handlePolygonClick(): boolean {
@@ -203,7 +210,6 @@ handleMouseUp(event: MouseEvent): boolean {
   }
 
   // Drag operations
- 
   private startDragOperation(): boolean {
     const point = this.getWorkplaneIntersection();
     if (!point) return false;
@@ -216,13 +222,11 @@ handleMouseUp(event: MouseEvent): boolean {
     console.log(`Started dragging ${this.currentTool} at:`, point);
     return true;
   }
+
   private updateDragPreview(): void {
     if (!this.startPoint) return;
     const currentPoint = this.getWorkplaneIntersection();
     if (!currentPoint) return;
-  
-    // REMOVE THIS:
-    // currentPoint.x += 0.1;
   
     this.clearPreview();
   
@@ -247,7 +251,7 @@ handleMouseUp(event: MouseEvent): boolean {
   
     console.log('Drag finished from', this.startPoint, 'to', endPoint);
   
-    // Check distance threshold to avoid zero-area rectangle
+    // Check distance threshold to avoid zero-area shapes
     if (this.startPoint.distanceTo(endPoint) < 0.01) {
       console.warn("Drag distance too small; ignoring shape creation.");
       this.isDragging = false;
@@ -266,75 +270,93 @@ handleMouseUp(event: MouseEvent): boolean {
     this.startPoint = null;
     this.clearPreview();
   }
-  
 
-  // Shape completion
-  private finishLine(endPoint: THREE.Vector3): void {
-    if (!this.startPoint) return;
+  // Multi-line drawing methods
+  private updateMultiLinePreview(): void {
+    if (this.multiLinePoints.length === 0) return;
+    
+    const currentPoint = this.getWorkplaneIntersection();
+    if (!currentPoint) return;
 
+    this.clearPreview();
+
+    // Create preview line from last point to current mouse position
+    const previewPoints = [...this.multiLinePoints, currentPoint];
+    
+    const geometry = new THREE.BufferGeometry().setFromPoints(previewPoints);
+    const material = new THREE.LineBasicMaterial({
+      color: 0x60a5fa,
+      transparent: true,
+      opacity: 0.7,
+      linewidth: 2
+    });
+
+    this.previewLine = new THREE.Line(geometry, material);
+    this.scene.add(this.previewLine);
+  }
+
+  private finishMultiLine(): void {
+    if (this.multiLinePoints.length < 2) return;
+
+    // Create a closed polygon from the multi-line points
     const shape: SketchShape3D = {
-      type: 'line',
-      points: [
-        {
-          position: this.startPoint.clone(),
-          id: `point-${Date.now()}`,
-          onSurface: true
-        },
-        {
-          position: endPoint.clone(),
-          id: `point-${Date.now()}`,
-          onSurface: true
-        }
-      ],
-      id: `line-${Date.now()}`,
-      closed: false
+      type: 'polygon', // Changed from 'line' to 'polygon' for extrusion
+      points: this.multiLinePoints.map((pos, i) => ({
+        position: pos.clone(),
+        id: `point-${Date.now()}-${i}`,
+        onSurface: true
+      })),
+      id: `multiline-${Date.now()}`,
+      closed: true // Mark as closed for extrusion
     };
 
-    this.addSketchPoint(endPoint);
     this.createSketchLine(shape);
     this.shapes.push(shape);
-    console.log('Created line:', shape);
+    console.log('Created multi-line shape (as closed polygon):', shape);
+
+    // Reset multi-line state
+    this.isMultiLineMode = false;
+    this.multiLinePoints = [];
+    this.clearPreview();
   }
-// Add a little logging in finishRectangle to confirm points:
-private finishRectangle(endPoint: THREE.Vector3): void {
-  if (!this.startPoint) return;
 
-  const start = this.startPoint;
-  const end = endPoint;
+  // Shape completion methods
+  private finishRectangle(endPoint: THREE.Vector3): void {
+    if (!this.startPoint) return;
 
-  // Convert to local workplane coordinates for rectangle corner calculation
-  const startLocal = this.worldToWorkplane(start);
-  const endLocal = this.worldToWorkplane(end);
+    const start = this.startPoint;
+    const end = endPoint;
 
-  console.log('Rectangle local corners (start, end):', startLocal, endLocal);
+    // Convert to local workplane coordinates for rectangle corner calculation
+    const startLocal = this.worldToWorkplane(start);
+    const endLocal = this.worldToWorkplane(end);
 
-  const corners = [
-    new THREE.Vector3(startLocal.x, startLocal.y, 0),
-    new THREE.Vector3(endLocal.x, startLocal.y, 0),
-    new THREE.Vector3(endLocal.x, endLocal.y, 0),
-    new THREE.Vector3(startLocal.x, endLocal.y, 0)
-  ];
+    const corners = [
+      new THREE.Vector3(startLocal.x, startLocal.y, 0),
+      new THREE.Vector3(endLocal.x, startLocal.y, 0),
+      new THREE.Vector3(endLocal.x, endLocal.y, 0),
+      new THREE.Vector3(startLocal.x, endLocal.y, 0)
+    ];
 
-  const worldCorners = corners.map(corner => this.workplaneToWorld(corner));
+    const worldCorners = corners.map(corner => this.workplaneToWorld(corner));
 
-  console.log('Rectangle world corners:', worldCorners);
+    const shape: SketchShape3D = {
+      type: 'rectangle',
+      points: worldCorners.map((pos, i) => ({
+        position: pos,
+        id: `point-${Date.now()}-${i}`,
+        onSurface: true
+      })),
+      id: `rect-${Date.now()}`,
+      closed: true
+    };
 
-  const shape: SketchShape3D = {
-    type: 'rectangle',
-    points: worldCorners.map((pos, i) => ({
-      position: pos,
-      id: `point-${Date.now()}-${i}`,
-      onSurface: true
-    })),
-    id: `rect-${Date.now()}`,
-    closed: true
-  };
+    worldCorners.forEach(corner => this.addSketchPoint(corner));
+    this.createSketchLine(shape);
+    this.shapes.push(shape);
+    console.log('Created rectangle shape:', shape);
+  }
 
-  worldCorners.forEach(corner => this.addSketchPoint(corner));
-  this.createSketchLine(shape);
-  this.shapes.push(shape);
-  console.log('Created rectangle shape:', shape);
-}
   private finishCircle(edgePoint: THREE.Vector3): void {
     if (!this.startPoint) return;
 
@@ -373,12 +395,10 @@ private finishRectangle(endPoint: THREE.Vector3): void {
     this.clearPreview();
   }
 
-  // Previews
+  // Preview methods
   private createRectanglePreview(start: THREE.Vector3, end: THREE.Vector3): void {
     const startLocal = this.worldToWorkplane(start);
     const endLocal = this.worldToWorkplane(end);
-  
-    console.log("Preview rectangle corners local coords:", startLocal, endLocal);
   
     const corners = [
       new THREE.Vector3(startLocal.x, startLocal.y, 0),
@@ -389,7 +409,6 @@ private finishRectangle(endPoint: THREE.Vector3): void {
     ];
   
     const worldCorners = corners.map(corner => this.workplaneToWorld(corner));
-    console.log("Preview rectangle corners world coords:", worldCorners);
   
     const geometry = new THREE.BufferGeometry().setFromPoints(worldCorners);
     const material = new THREE.LineBasicMaterial({
@@ -517,7 +536,12 @@ private finishRectangle(endPoint: THREE.Vector3): void {
     if (this.hasWorkplane) return false;
 
     const geometry = new THREE.PlaneGeometry(10, 10);
-    const material = new THREE.MeshBasicMaterial({ color: 0xcccccc, side: THREE.DoubleSide, transparent: true, opacity: 0.4 });
+    const material = new THREE.MeshBasicMaterial({ 
+      color: 0xcccccc, 
+      side: THREE.DoubleSide, 
+      transparent: true, 
+      opacity: 0.4 
+    });
     this.workplane = new THREE.Mesh(geometry, material);
     this.workplane.rotation.x = -Math.PI / 2; // horizontal plane
     this.scene.add(this.workplane);
@@ -555,7 +579,6 @@ private finishRectangle(endPoint: THREE.Vector3): void {
     snapped.z = Math.round(snapped.z / this.gridSize) * this.gridSize;
     return snapped;
   }
-  
 
   private clearPreview(): void {
     if (this.previewLine) {
@@ -576,8 +599,6 @@ private finishRectangle(endPoint: THREE.Vector3): void {
     const rect = this.renderer.domElement.getBoundingClientRect();
     this.mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
     this.mouse.y = - ((event.clientY - rect.top) / rect.height) * 2 + 1;
-  
-    console.log('Mouse coords normalized:', this.mouse.x, this.mouse.y);
   }
   
   private worldToWorkplane(worldPos: THREE.Vector3): THREE.Vector3 {
@@ -593,10 +614,6 @@ private finishRectangle(endPoint: THREE.Vector3): void {
     this.workplane.localToWorld(world);
     return world;
   }
-
-  // Other helpers like reset, clear shapes, set tool etc can be added here
-
-
 
   // Public methods
   setTool(tool: string): void {
@@ -652,11 +669,18 @@ private finishRectangle(endPoint: THREE.Vector3): void {
       this.finishPolygon();
     }
     
+    // Finish multi-line if in progress
+    if (this.isMultiLineMode && this.multiLinePoints.length >= 2) {
+      this.finishMultiLine();
+    }
+    
     this.clearPreview();
     this.isDrawing = false;
     this.isDragging = false;
     this.startPoint = null;
     this.currentShape = null;
+    this.isMultiLineMode = false;
+    this.multiLinePoints = [];
   }
 
   getShapes(): SketchShape3D[] {
@@ -669,6 +693,8 @@ private finishRectangle(endPoint: THREE.Vector3): void {
     this.isDrawing = false;
     this.isDragging = false;
     this.startPoint = null;
+    this.isMultiLineMode = false;
+    this.multiLinePoints = [];
     
     // Remove all sketch elements
     this.sketchLines.forEach(line => {
