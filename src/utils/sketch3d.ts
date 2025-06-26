@@ -535,7 +535,7 @@ export class SketchEngine3D {
   private createWorkplane(): boolean {
     if (this.hasWorkplane) return false;
 
-    const geometry = new THREE.PlaneGeometry(10, 10);
+    const geometry = new THREE.PlaneGeometry(100, 100);
     const material = new THREE.MeshBasicMaterial({ 
       color: 0xcccccc, 
       side: THREE.DoubleSide, 

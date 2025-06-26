@@ -2,6 +2,7 @@
 export class Vec3 {
   constructor(public x: number = 0, public y: number = 0, public z: number = 0) {}
 
+  // --- Static methods ---
   static add(a: Vec3, b: Vec3): Vec3 {
     return new Vec3(a.x + b.x, a.y + b.y, a.z + b.z);
   }
@@ -30,6 +31,60 @@ export class Vec3 {
   static dot(a: Vec3, b: Vec3): number {
     return a.x * b.x + a.y * b.y + a.z * b.z;
   }
+
+  // --- Instance methods (used for in-place modifications and cloning) ---
+
+  // Create a new Vec3 instance with the same values
+  clone(): Vec3 {
+    return new Vec3(this.x, this.y, this.z);
+  }
+
+  // Copy values from another Vec3 into this instance
+  copy(other: Vec3): this {
+    this.x = other.x;
+    this.y = other.y;
+    this.z = other.z;
+    return this;
+  }
+
+  // Mutate this vector by adding another vector (in-place)
+  add(other: Vec3): this {
+    this.x += other.x;
+    this.y += other.y;
+    this.z += other.z;
+    return this;
+  }
+
+  // Mutate this vector by subtracting another vector (in-place)
+  subtract(other: Vec3): this {
+    this.x -= other.x;
+    this.y -= other.y;
+    this.z -= other.z;
+    return this;
+  }
+
+  // Mutate this vector by scaling it (in-place)
+  multiplyScalar(scalar: number): this {
+    this.x *= scalar;
+    this.y *= scalar;
+    this.z *= scalar;
+    return this;
+  }
+
+  // Mutate this vector by normalizing it (in-place)
+  normalize(): this {
+    const length = this.length();
+    if (length > 0) {
+      this.x /= length;
+      this.y /= length;
+      this.z /= length;
+    }
+    return this;
+  }
+
+  length(): number {
+    return Math.sqrt(this.x * this.x + this.y * this.y + this.z * this.z);
+  }
 }
 
 export class Mat4 {
@@ -50,7 +105,7 @@ export class Mat4 {
   static perspective(fov: number, aspect: number, near: number, far: number): Mat4 {
     const f = 1.0 / Math.tan(fov / 2);
     const nf = 1 / (near - far);
-    
+
     return new Mat4(new Float32Array([
       f / aspect, 0, 0, 0,
       0, f, 0, 0,
@@ -119,7 +174,7 @@ export class Mat4 {
 
     for (let i = 0; i < 4; i++) {
       for (let j = 0; j < 4; j++) {
-        result[i * 4 + j] = 
+        result[i * 4 + j] =
           a[i * 4 + 0] * b[0 * 4 + j] +
           a[i * 4 + 1] * b[1 * 4 + j] +
           a[i * 4 + 2] * b[2 * 4 + j] +

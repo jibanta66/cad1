@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useMemo, useRef, useEffect } from 'react'; // Import useRef and useEffect
+import React, { useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import { Viewport3D } from './components/Viewport3D';
 import { Toolbar } from './components/Toolbar';
 import { PropertiesPanel } from './components/PropertiesPanel';
@@ -16,9 +16,11 @@ import { OffsetEngine } from './three/OffsetEngine';
 import { SketchShape3D } from './utils/sketch3d';
 import { MeasurementEngine, Measurement } from './utils/measurement';
 import { Vec3 } from './utils/math';
-import { Save, Download, Settings, Layers, Upload } from 'lucide-react';
+import { Save, Download, Settings, Layers, Upload, ChevronDown } from 'lucide-react';
 import * as THREE from 'three';
-import { FileImport, ImportedFile } from './components/FileImport'; // Assuming ImportedFile type is here
+import { FileImport, ImportedFile } from './components/FileImport';
+import { OBJExporter } from 'three/addons/exporters/OBJExporter.js';
+import { STLExporter } from 'three/addons/exporters/STLExporter.js';
 
 function App() {
   const [objects, setObjects] = useState<RenderObject[]>([]);
@@ -26,14 +28,12 @@ function App() {
   const [activeTool, setActiveTool] = useState('select');
   const [transformMode, setTransformMode] = useState<'translate' | 'rotate' | 'scale'>('translate');
 
-  // Panel states
   const [sketchPanelOpen, setSketchPanelOpen] = useState(false);
   const [fileImportOpen, setFileImportOpen] = useState(false);
   const [lightingPanelOpen, setLightingPanelOpen] = useState(false);
   const [gridPanelOpen, setGridPanelOpen] = useState(false);
   const [measurementPanelOpen, setMeasurementPanelOpen] = useState(false);
 
-  // Sketch mode state
   const [sketchMode, setSketchMode] = useState(false);
   const [sketchTool, setSketchTool] = useState('line');
   const [sketchModeType, setSketchModeType] = useState<'surface' | 'plane' | 'free'>('surface');
@@ -44,18 +44,15 @@ function App() {
   });
   const [sketchShapes, setSketchShapes] = useState<SketchShape3D[]>([]);
 
-  // Measurement system
   const [measurementEngine] = useState(() => new MeasurementEngine());
   const [measurements, setMeasurements] = useState<Measurement[]>([]);
 
-  // Lighting settings
   const [lightSettings, setLightSettings] = useState<LightSettings>({
     ambient: { intensity: 0.2, color: [1, 1, 1] },
     directional: { intensity: 0.8, color: [1, 1, 1], position: [10, 10, 10] },
     point: { intensity: 0.5, color: [1, 1, 1], position: [5, 5, 5] }
   });
 
-  // Grid settings
   const [gridSettings, setGridSettings] = useState<GridSettings>({
     size: 10,
     divisions: 20,
@@ -65,24 +62,23 @@ function App() {
     color: new Vec3(0.5, 0.5, 0.5)
   });
 
-  // Sketch engine reference
   const [sketchEngineRef, setSketchEngineRef] = useState<any>(null);
 
-  // Resizable sidebar widths
-  const [leftSidebarWidth, setLeftSidebarWidth] = useState(256); // Initial width for w-64
-  const [rightSidebarWidth, setRightSidebarWidth] = useState(320); // Initial width for w-80
+  const [leftSidebarWidth, setLeftSidebarWidth] = useState(256);
+  const [rightSidebarWidth, setRightSidebarWidth] = useState(320);
 
-  // State and Ref for Viewport dimensions
   const viewportRef = useRef<HTMLDivElement>(null);
   const [viewportDimensions, setViewportDimensions] = useState({ width: 0, height: 0 });
 
-  // Effect to observe viewport dimensions
+  const [exportDropdownOpen, setExportDropdownOpen] = useState(false);
+  const [selectedExportFormat, setSelectedExportFormat] = useState('json');
+
   useEffect(() => {
     if (viewportRef.current) {
       const observer = new ResizeObserver(entries => {
         for (let entry of entries) {
-          if (entry.contentBoxSize) { // Standard way to get dimensions
-            const { width, height } = entry.contentRect; // Use contentRect for actual content dimensions
+          if (entry.contentBoxSize) {
+            const { width, height } = entry.contentRect;
             setViewportDimensions({ width, height });
           }
         }
@@ -90,7 +86,6 @@ function App() {
 
       observer.observe(viewportRef.current);
 
-      // Initial dimensions on mount
       setViewportDimensions({
         width: viewportRef.current.offsetWidth,
         height: viewportRef.current.offsetHeight
@@ -98,8 +93,7 @@ function App() {
 
       return () => observer.disconnect();
     }
-  }, [leftSidebarWidth, rightSidebarWidth]); // Re-run effect if sidebar widths change, to ensure initial correct value
-
+  }, [leftSidebarWidth, rightSidebarWidth]);
 
   const generateId = (type: string): string => {
     const timestamp = Date.now();
@@ -139,10 +133,14 @@ function App() {
 
     const mesh = new THREE.Mesh(geometry, material);
 
+    // Apply a slight offset for new primitives so they don't spawn directly on top of each other
+    const existingCount = objects.filter(obj => obj.id.startsWith(type)).length;
+    const offset = existingCount * 0.5; // Offset by 0.5 units for each new object of the same type
+
     const newObject: RenderObject = {
       id: generateId(type),
       mesh,
-      position: new Vec3(0, 0, 0),
+      position: new Vec3(offset, offset, offset), // Apply the offset here
       rotation: new Vec3(0, 0, 0),
       scale: new Vec3(1, 1, 1),
       color,
@@ -152,7 +150,7 @@ function App() {
 
     setObjects(prev => [...prev, newObject]);
     setSelectedObjectId(newObject.id);
-  }, []);
+  }, [objects]); // Add objects to dependency array to get the latest count
 
   const handleFilesImported = useCallback((importedFiles: ImportedFile[]) => {
     const newObjects: RenderObject[] = [];
@@ -291,19 +289,16 @@ function App() {
 
     setObjects(prev => prev.map(obj => {
       if (obj.id === selectedObjectId) {
-        // Dispose old geometry to free up memory
         obj.mesh.geometry.dispose();
 
-        // Create new geometry
         const newGeometry = OffsetEngine.offsetFace(obj.mesh.geometry, 0, 0.2);
 
-        // Create a new mesh instance with the updated geometry
         const newMesh = new THREE.Mesh(newGeometry, obj.mesh.material);
         newMesh.castShadow = true;
         newMesh.receiveShadow = true;
-        newMesh.userData = { id: obj.id }; // Preserve user data
+        newMesh.userData = { id: obj.id };
 
-        return { ...obj, mesh: newMesh }; // Return new object with updated mesh
+        return { ...obj, mesh: newMesh };
       }
       return obj;
     }));
@@ -314,19 +309,16 @@ function App() {
 
     setObjects(prev => prev.map(obj => {
       if (obj.id === selectedObjectId) {
-        // Dispose old geometry to free up memory
         obj.mesh.geometry.dispose();
 
-        // Create new geometry
         const newGeometry = OffsetEngine.offsetBody(obj.mesh.geometry, 0.1);
 
-        // Create a new mesh instance with the updated geometry
         const newMesh = new THREE.Mesh(newGeometry, obj.mesh.material);
         newMesh.castShadow = true;
         newMesh.receiveShadow = true;
-        newMesh.userData = { id: obj.id }; // Preserve user data
+        newMesh.userData = { id: obj.id };
 
-        return { ...obj, mesh: newMesh }; // Return new object with updated mesh
+        return { ...obj, mesh: newMesh };
       }
       return obj;
     }));
@@ -362,7 +354,7 @@ function App() {
 
   const selectAllObjects = useCallback(() => {
     if (objects.length > 0) {
-      setSelectedObjectId(objects[0].id); // For simplicity, select first object
+      setSelectedObjectId(objects[0].id);
     }
   }, [objects]);
 
@@ -449,7 +441,6 @@ function App() {
     }
 
     if (settings.getShapes) {
-      // Store reference to sketch engine methods
       setSketchEngineRef({
         clear: settings.clear,
         finishSketch: settings.finishSketch,
@@ -458,45 +449,104 @@ function App() {
     }
   }, [sketchEngineRef]);
 
-  // Memoize selectedObject lookup to prevent unnecessary re-calculations
   const selectedObject = useMemo(() =>
     selectedObjectId ? objects.find(obj => obj.id === selectedObjectId) || null : null,
     [selectedObjectId, objects]
   );
 
-  const exportScene = useCallback(() => {
-    const sceneData = {
-      objects: objects.map(obj => ({
-        id: obj.id,
-        type: obj.id.split('-')[0],
-        position: obj.position,
-        rotation: obj.rotation,
-        scale: obj.scale,
-        color: obj.color,
-        visible: obj.visible
-      })),
-      lighting: lightSettings,
-      grid: gridSettings,
-      measurements: measurements,
-      metadata: {
-        exportedAt: new Date().toISOString(),
-        version: '3.0',
-        renderer: 'Three.js'
+  // --- Export Scene Function (Modified to apply transformations) ---
+  const exportScene = useCallback((format: string) => {
+    let data: string | null = null;
+    let filename = '';
+    let mimeType = '';
+
+    const sceneToExport = new THREE.Scene(); // Create a temporary scene for export
+
+    // Iterate over your RenderObject array and add cloned meshes with applied transformations
+    objects.forEach(obj => {
+      // It's crucial to clone the mesh and apply the transformations from your state
+      // directly to this cloned mesh before adding it to the export scene.
+      const meshClone = obj.mesh.clone();
+
+      // Apply position, rotation, and scale from your RenderObject state
+      meshClone.position.set(obj.position.x, obj.position.y, obj.position.z);
+      meshClone.rotation.set(obj.rotation.x, obj.rotation.y, obj.rotation.z);
+      meshClone.scale.set(obj.scale.x, obj.scale.y, obj.scale.z);
+
+      // Important: If your Mesh materials are not cloning correctly, or if you want
+      // to ensure a flat shading or specific material properties in export,
+      // you might need to create a new simple material for the cloned mesh.
+      // For most cases, cloning the material should work if it's a standard Three.js material.
+      // If issues persist, consider:
+      // meshClone.material = new THREE.MeshPhongMaterial({ color: (obj.mesh.material as THREE.MeshPhongMaterial).color });
+
+      sceneToExport.add(meshClone);
+    });
+
+    try {
+      switch (format) {
+        case 'json':
+          const sceneData = {
+            objects: objects.map(obj => ({
+              id: obj.id,
+              type: obj.id.split('-')[0],
+              position: obj.position,
+              rotation: obj.rotation,
+              scale: obj.scale,
+              color: obj.color,
+              visible: obj.visible,
+            })),
+            lighting: lightSettings,
+            grid: gridSettings,
+            measurements: measurements,
+            metadata: {
+              exportedAt: new Date().toISOString(),
+              version: '3.0',
+              renderer: 'Three.js'
+            }
+          };
+          data = JSON.stringify(sceneData, null, 2);
+          filename = 'threejs-cad-scene.json';
+          mimeType = 'application/json';
+          break;
+
+        case 'obj':
+          const objExporter = new OBJExporter();
+          data = objExporter.parse(sceneToExport); // Pass the temporary scene with applied transformations
+          filename = 'threejs-cad-scene.obj';
+          mimeType = 'text/plain';
+          break;
+
+        case 'stl':
+          const stlExporter = new STLExporter();
+          // STLExporter by default uses world coordinates. Passing the sceneToExport handles positions.
+          data = stlExporter.parse(sceneToExport, { binary: false });
+          filename = 'threejs-cad-scene.stl';
+          mimeType = 'application/vnd.ms-pki.stl';
+          break;
+
+        default:
+          console.warn('Unsupported export format:', format);
+          return;
       }
-    };
 
-    const blob = new Blob([JSON.stringify(sceneData, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'threejs-cad-scene.json';
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  }, [objects, lightSettings, gridSettings, measurements]);
+      if (data) {
+        const blob = new Blob([data], { type: mimeType });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      }
+    } catch (error) {
+      console.error(`Error exporting to ${format}:`, error);
+      alert(`Failed to export scene to ${format}. Check console for details.`);
+    }
+  }, [objects, lightSettings, gridSettings, measurements]); // Added objects to dependencies
 
-  // Handlers for resizing
   const handleMouseDownLeft = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
     document.addEventListener('mousemove', handleMouseMoveLeft);
@@ -505,7 +555,6 @@ function App() {
 
   const handleMouseMoveLeft = useCallback((e: MouseEvent) => {
     const newWidth = e.clientX;
-    // Set a minimum width (e.g., 200px) and a maximum width (e.g., 400px, or based on viewport)
     setLeftSidebarWidth(Math.max(200, Math.min(400, newWidth)));
   }, []);
 
@@ -521,9 +570,7 @@ function App() {
   }, []);
 
   const handleMouseMoveRight = useCallback((e: MouseEvent) => {
-    // Calculate new width relative to the right edge of the viewport
     const newWidth = window.innerWidth - e.clientX;
-    // Set a minimum and maximum width
     setRightSidebarWidth(Math.max(200, Math.min(400, newWidth)));
   }, []);
 
@@ -534,7 +581,6 @@ function App() {
 
   return (
     <div className="min-h-screen overflow-y-auto bg-gray-900 text-white flex flex-col">
-      {/* Keyboard Shortcuts Handler */}
       <KeyboardShortcuts
         onTransformModeChange={setTransformMode}
         onDuplicate={duplicateSelected}
@@ -544,7 +590,6 @@ function App() {
         selectedObjectId={selectedObjectId}
       />
 
-      {/* Header */}
       <header className="bg-gray-800 border-b border-gray-700 px-6 py-3">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-4">
@@ -573,13 +618,39 @@ function App() {
             >
               <Upload size={16} /> Import 3D File
             </button>
-            <button
-              onClick={exportScene}
-              className="flex items-center gap-2 px-3 py-2 bg-green-600 hover:bg-green-700 rounded-lg transition-colors text-sm"
-            >
-              <Download size={16} />
-              Export Scene
-            </button>
+
+            <div className="relative">
+              <button
+                onClick={() => setExportDropdownOpen(!exportDropdownOpen)}
+                className="flex items-center gap-1 px-3 py-2 bg-green-600 hover:bg-green-700 rounded-lg transition-colors text-sm"
+              >
+                <Download size={16} />
+                Export Scene <ChevronDown size={16} className={`ml-1 transition-transform ${exportDropdownOpen ? 'rotate-180' : ''}`} />
+              </button>
+              {exportDropdownOpen && (
+                <div className="absolute right-0 mt-2 w-40 bg-gray-700 border border-gray-600 rounded-lg shadow-lg z-10">
+                  <button
+                    onClick={() => { exportScene('json'); setExportDropdownOpen(false); }}
+                    className="block w-full text-left px-4 py-2 text-sm text-white hover:bg-gray-600 rounded-t-lg"
+                  >
+                    Export as .json
+                  </button>
+                  <button
+                    onClick={() => { exportScene('obj'); setExportDropdownOpen(false); }}
+                    className="block w-full text-left px-4 py-2 text-sm text-white hover:bg-gray-600"
+                  >
+                    Export as .obj
+                  </button>
+                  <button
+                    onClick={() => { exportScene('stl'); setExportDropdownOpen(false); }}
+                    className="block w-full text-left px-4 py-2 text-sm text-white hover:bg-gray-600 rounded-b-lg"
+                  >
+                    Export as .stl
+                  </button>
+                </div>
+              )}
+            </div>
+
             <button className="flex items-center gap-2 px-3 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg transition-colors text-sm">
               <Save size={16} />
               Save Project
@@ -592,9 +663,7 @@ function App() {
         </div>
       </header>
 
-      {/* Main content area: Left Sidebar, Viewport, Right Sidebar */}
       <div className="flex flex-1 overflow-hidden">
-        {/* Left sidebar - Tools */}
         <div
           className="border-r border-gray-700 bg-gray-800 flex-shrink-0"
           style={{ width: leftSidebarWidth }}
@@ -617,14 +686,12 @@ function App() {
           />
         </div>
 
-        {/* Left Resizer */}
         <div
           className="w-2 bg-gray-700 cursor-ew-resize hover:bg-gray-600 flex-shrink-0"
           onMouseDown={handleMouseDownLeft}
         />
 
-        {/* Center - 3D Viewport */}
-        <div ref={viewportRef} className="flex-1 relative"> {/* Add ref here */}
+        <div ref={viewportRef} className="flex-1 relative">
           <Viewport3D
             objects={objects}
             selectedObjectId={selectedObjectId}
@@ -641,24 +708,20 @@ function App() {
             sketchModeType={sketchModeType}
             sketchSettings={sketchSettings}
             onSketchSettingsChange={handleSketchSettingsChange}
-            // Pass the dimensions to Viewport3D
             viewportWidth={viewportDimensions.width}
             viewportHeight={viewportDimensions.height}
           />
         </div>
 
-        {/* Right Resizer */}
         <div
           className="w-2 bg-gray-700 cursor-ew-resize hover:bg-gray-600 flex-shrink-0"
           onMouseDown={handleMouseDownRight}
         />
 
-        {/* Right sidebar - Properties and Panels */}
         <div
           className="border-l border-gray-700 flex flex-col flex-shrink-0"
           style={{ width: rightSidebarWidth }}
         >
-          {/* Dynamic panel based on active tool */}
           {measurementPanelOpen && (
             <div className="h-1/2 border-b border-gray-700">
               <MeasurementPanel
@@ -690,9 +753,8 @@ function App() {
             </div>
           )}
 
-          {/* Scene Hierarchy */}
           <div className={`${measurementPanelOpen || lightingPanelOpen || gridPanelOpen ? 'h-1/2' : 'h-1/2'} border-b border-gray-700 overflow-y-auto`}>
-  
+
             <SceneHierarchy
               objects={objects}
               selectedObjectId={selectedObjectId}
@@ -701,7 +763,6 @@ function App() {
             />
           </div>
 
-          {/* Properties Panel */}
           <div className={`${measurementPanelOpen || lightingPanelOpen || gridPanelOpen ? 'h-1/2' : 'h-1/2'} overflow-y-auto`}>
             <PropertiesPanel
               selectedObject={selectedObject}
@@ -716,7 +777,6 @@ function App() {
         onClose={() => setFileImportOpen(false)}
         onFilesImported={handleFilesImported}
       />
-      {/* Context Toolbar */}
       {!sketchMode && (
         <ContextToolbar
           selectedObjectId={selectedObjectId}
@@ -735,7 +795,6 @@ function App() {
         />
       )}
 
-      {/* Status bar */}
       <div className="bg-gray-800 border-t border-gray-700 px-6 py-2 text-sm text-gray-400">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-6">
@@ -755,7 +814,6 @@ function App() {
         </div>
       </div>
 
-      {/* Advanced Sketch Panel */}
       <AdvancedSketchPanel
         isOpen={sketchPanelOpen}
         onClose={handleCloseSketch}
@@ -771,7 +829,6 @@ function App() {
         currentShapes={sketchEngineRef ? sketchEngineRef.getShapes() : []}
       />
 
-      {/* Debug: Current Sketch Shapes */}
       {sketchShapes.length > 0 && (
         <div className="fixed bottom-4 right-4 bg-gray-800 border border-gray-600 rounded-lg p-4 max-w-sm">
           <h3 className="text-sm font-semibold text-gray-300 mb-2">Current Sketch Shapes:</h3>
