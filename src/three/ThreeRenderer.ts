@@ -118,7 +118,7 @@ export class ThreeRenderer {
 
     constructor(canvas: HTMLCanvasElement) {
         this.scene = new THREE.Scene();
-        this.scene.background = new THREE.Color(0x1a1a1e);
+        this.scene.background = new THREE.Color(0xf2f3f4);
 
         this.camera = new THREE.PerspectiveCamera(
             75,
@@ -162,7 +162,7 @@ export class ThreeRenderer {
             opacity: 0.3,
             visible: true,
             snapEnabled: true,
-            color: new Vec3(0.5, 0.5, 0.5)
+            color: new Vec3(0, 0, 0)
         };
 
         this.raycaster = new THREE.Raycaster();

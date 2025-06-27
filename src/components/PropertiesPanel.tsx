@@ -48,14 +48,52 @@ export const PropertiesPanel: React.FC<PropertiesPanelProps> = ({
     });
   };
 
-  const handleColorChange = (axis: 'x' | 'y' | 'z', value: number) => {
+  // Helper to convert RGB values (0-255) to hex string
+  const rgbToHex = (r: number, g: number, b: number) => {
+    return "#" + ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1);
+  };
+
+  // Helper to convert hex string to RGB values (0-1 range for RenderObject)
+  const hexToRgb = (hex: string) => {
+    const bigint = parseInt(hex.slice(1), 16);
+    const r = ((bigint >> 16) & 255) / 255;
+    const g = ((bigint >> 8) & 255) / 255;
+    const b = (bigint & 255) / 255;
+    return { x: r, y: g, z: b };
+  };
+
+  const handleColorChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const hexColor = e.target.value;
+    const { x, y, z } = hexToRgb(hexColor);
     onObjectUpdate(selectedObject.id, {
       color: {
-        ...selectedObject.color,
-        [axis]: Math.max(0, Math.min(1, value))
+        x,
+        y,
+        z,
+        // Preserve existing alpha if it's part of your RenderObject color
+        // Assuming your RenderObject color has an 'w' property for alpha
+        w: selectedObject.color.w !== undefined ? selectedObject.color.w : 1
       }
     });
   };
+
+  const handleAlphaChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const alphaValue = parseFloat(e.target.value);
+    onObjectUpdate(selectedObject.id, {
+      color: {
+        ...selectedObject.color,
+        w: alphaValue // Assuming 'w' is your alpha component
+      }
+    });
+  };
+
+  const currentHexColor = rgbToHex(
+    Math.round(selectedObject.color.x * 255),
+    Math.round(selectedObject.color.y * 255),
+    Math.round(selectedObject.color.z * 255)
+  );
+
+  const currentAlpha = selectedObject.color.w !== undefined ? selectedObject.color.w : 1;
 
   return (
     <div className="bg-gray-800 text-white p-4 overflow-y-auto">
@@ -124,36 +162,45 @@ export const PropertiesPanel: React.FC<PropertiesPanelProps> = ({
         </div>
       </div>
 
-      {/* Color */}
+      {/* Color and Alpha */}
       <div className="mb-6">
-        <h3 className="text-sm font-semibold mb-3 text-orange-400">Color (RGB)</h3>
+        <h3 className="text-sm font-semibold mb-3 text-orange-400">Color & Transparency</h3>
         <div className="space-y-3">
-          {(['x', 'y', 'z'] as const).map((axis, index) => (
-            <div key={axis} className="flex items-center gap-3">
-              <label className="w-4 text-sm font-mono uppercase">
-                {['R', 'G', 'B'][index]}
-              </label>
-              <input
-                type="range"
-                min="0"
-                max="1"
-                step="0.01"
-                value={selectedObject.color[axis]}
-                onChange={(e) => handleColorChange(axis, parseFloat(e.target.value))}
-                className="flex-1"
-              />
-              <span className="w-12 text-xs text-gray-400">
-                {(selectedObject.color[axis] * 255).toFixed(0)}
-              </span>
-            </div>
-          ))}
+          {/* Color Picker */}
+          <div className="flex items-center gap-3">
+            <label className="w-4 text-sm font-mono uppercase">RGB</label>
+            <input
+              type="color"
+              value={currentHexColor}
+              onChange={handleColorChange}
+              className="flex-1 h-10 w-full cursor-pointer rounded overflow-hidden p-0 border-none"
+              style={{ backgroundColor: currentHexColor }} // This helps make the color input more visible
+            />
+          </div>
+
+          {/* Alpha Slider */}
+          <div className="flex items-center gap-3">
+            <label className="w-4 text-sm font-mono uppercase">A</label>
+            <input
+              type="range"
+              min="0"
+              max="1"
+              step="0.01"
+              value={currentAlpha}
+              onChange={handleAlphaChange}
+              className="flex-1"
+            />
+            <span className="w-12 text-xs text-gray-400">
+              {(currentAlpha * 100).toFixed(0)}%
+            </span>
+          </div>
         </div>
-        
-        {/* Color preview */}
-        <div 
+
+        {/* Color preview with alpha */}
+        <div
           className="mt-3 w-full h-8 rounded border border-gray-600"
           style={{
-            backgroundColor: `rgb(${(selectedObject.color.x * 255).toFixed(0)}, ${(selectedObject.color.y * 255).toFixed(0)}, ${(selectedObject.color.z * 255).toFixed(0)})`
+            backgroundColor: `rgba(${Math.round(selectedObject.color.x * 255)}, ${Math.round(selectedObject.color.y * 255)}, ${Math.round(selectedObject.color.z * 255)}, ${currentAlpha})`
           }}
         />
       </div>

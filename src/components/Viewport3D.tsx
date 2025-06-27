@@ -26,6 +26,10 @@ interface Viewport3DProps {
         workplaneVisible: boolean;
     };
     onSketchSettingsChange?: (settings: any) => void;
+    // --- ADDED THESE NEW PROPS ---
+    viewportWidth: number;
+    viewportHeight: number;
+    // ----------------------------
 }
 
 export const Viewport3D: React.FC<Viewport3DProps> = ({
@@ -44,7 +48,9 @@ export const Viewport3D: React.FC<Viewport3DProps> = ({
     sketchTool = 'line',
     sketchModeType = 'surface',
     sketchSettings = { snapToGrid: true, gridSize: 0.5, workplaneVisible: true },
-    onSketchSettingsChange
+    onSketchSettingsChange,
+    viewportWidth, // --- DESTRUCTURED HERE ---
+    viewportHeight // --- DESTRUCTURED HERE ---
 }) => {
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const rendererRef = useRef<ThreeRenderer | null>(null);
@@ -344,6 +350,7 @@ export const Viewport3D: React.FC<Viewport3DProps> = ({
         onObjectTransform(selectedObjectId, { position, rotation, scale });
     }, [selectedObjectId, onObjectTransform]);
 
+    // Initial setup of ThreeRenderer and SketchEngine (runs once on mount)
     useEffect(() => {
         const canvas = canvasRef.current;
         if (!canvas) return;
@@ -365,6 +372,31 @@ export const Viewport3D: React.FC<Viewport3DProps> = ({
             sketchEngineRef.current?.dispose();
         };
     }, [updateCamera, renderOnce]); // Dependencies: updateCamera and renderOnce to ensure proper initialization
+
+    // --- NEW / MODIFIED RESIZE EFFECT ---
+    useEffect(() => {
+        if (rendererRef.current && isInitialized && viewportWidth > 0 && viewportHeight > 0) {
+            console.log(`Viewport3D: Resizing renderer to ${viewportWidth}x${viewportHeight}`);
+            rendererRef.current.resize(viewportWidth, viewportHeight);
+            renderOnce();
+        }
+    }, [viewportWidth, viewportHeight, isInitialized, renderOnce]); // Depend on width, height props
+
+    // Old window resize listener (removed as it's redundant with props-based resize)
+    // useEffect(() => {
+    //     const handleResize = () => {
+    //         const canvas = canvasRef.current;
+    //         if (canvas && rendererRef.current) {
+    //             const rect = canvas.getBoundingClientRect();
+    //             rendererRef.current.resize(rect.width, rect.height);
+    //             renderOnce();
+    //         }
+    //     };
+    //     window.addEventListener('resize', handleResize);
+    //     handleResize(); // Call once initially to set correct size
+    //     return () => window.removeEventListener('resize', handleResize);
+    // }, [renderOnce]);
+
 
     useEffect(() => {
         if (sketchEngineRef.current && isInitialized) {
@@ -438,19 +470,6 @@ export const Viewport3D: React.FC<Viewport3DProps> = ({
         renderOnce(); // Re-render the scene after object changes
     }, [objects, selectedObjectId, isInitialized, renderOnce]); // Dependencies: `objects` and `selectedObjectId` trigger updates
 
-    useEffect(() => {
-        const handleResize = () => {
-            const canvas = canvasRef.current;
-            if (canvas && rendererRef.current) {
-                const rect = canvas.getBoundingClientRect();
-                rendererRef.current.resize(rect.width, rect.height);
-                renderOnce();
-            }
-        };
-        window.addEventListener('resize', handleResize);
-        handleResize(); // Call once initially to set correct size
-        return () => window.removeEventListener('resize', handleResize);
-    }, [renderOnce]);
 
     const getCursorStyle = () => {
         if (measurementActive || sketchMode) return 'cursor-crosshair';

@@ -16,11 +16,12 @@ import { OffsetEngine } from './three/OffsetEngine';
 import { SketchShape3D } from './utils/sketch3d';
 import { MeasurementEngine, Measurement } from './utils/measurement';
 import { Vec3 } from './utils/math';
-import { Save, Download, Settings, Layers, Upload, ChevronDown } from 'lucide-react';
+import { Save, Download, Settings, Layers, Upload, ChevronDown, Ruler, Lightbulb, Grid, ClipboardList, Package, PanelRightOpen, PanelRightClose } from 'lucide-react';
 import * as THREE from 'three';
 import { FileImport, ImportedFile } from './components/FileImport';
 import { OBJExporter } from 'three/addons/exporters/OBJExporter.js';
 import { STLExporter } from 'three/addons/exporters/STLExporter.js';
+import { CollapsiblePanel } from './components/CollapsiblePanel';
 
 function App() {
   const [objects, setObjects] = useState<RenderObject[]>([]);
@@ -30,9 +31,13 @@ function App() {
 
   const [sketchPanelOpen, setSketchPanelOpen] = useState(false);
   const [fileImportOpen, setFileImportOpen] = useState(false);
-  const [lightingPanelOpen, setLightingPanelOpen] = useState(false);
+  const [lightingPanelOpen, setLightingPanelOpen] = useState(true);
   const [gridPanelOpen, setGridPanelOpen] = useState(false);
-  const [measurementPanelOpen, setMeasurementPanelOpen] = useState(false);
+  const [measurementPanelOpen, setMeasurementPanelOpen] = useState(true);
+  const [sceneHierarchyOpen, setSceneHierarchyOpen] = useState(true);
+  const [propertiesPanelOpen, setPropertiesPanelOpen] = useState(true);
+
+  const [isRightSidebarOpen, setIsRightSidebarOpen] = useState(true);
 
   const [sketchMode, setSketchMode] = useState(false);
   const [sketchTool, setSketchTool] = useState('line');
@@ -73,27 +78,45 @@ function App() {
   const [exportDropdownOpen, setExportDropdownOpen] = useState(false);
   const [selectedExportFormat, setSelectedExportFormat] = useState('json');
 
+  const mainContentRef = useRef<HTMLDivElement>(null);
+
+  // This useEffect now combines ResizeObserver with a direct dimension update
+  // triggered by layout-affecting state changes.
   useEffect(() => {
     if (viewportRef.current) {
+      const updateViewportDimensions = () => {
+        if (viewportRef.current) {
+          const width = viewportRef.current.offsetWidth;
+          const height = viewportRef.current.offsetHeight;
+          setViewportDimensions({ width, height });
+          console.log(`App: Viewport dimensions updated to ${width}x${height}`); // Debug log
+        }
+      };
+
+      // 1. Setup ResizeObserver
       const observer = new ResizeObserver(entries => {
         for (let entry of entries) {
           if (entry.contentBoxSize) {
             const { width, height } = entry.contentRect;
             setViewportDimensions({ width, height });
+            console.log(`App: ResizeObserver triggered: ${width}x${height}`); // Debug log
           }
         }
       });
 
       observer.observe(viewportRef.current);
 
-      setViewportDimensions({
-        width: viewportRef.current.offsetWidth,
-        height: viewportRef.current.offsetHeight
-      });
+      // 2. Initial update and update on dependency change
+      // This ensures dimensions are calculated when the component mounts
+      // or when relevant sidebar/layout state changes,
+      // providing a fallback if ResizeObserver has a slight delay.
+      updateViewportDimensions();
 
-      return () => observer.disconnect();
+      return () => {
+        observer.disconnect();
+      };
     }
-  }, [leftSidebarWidth, rightSidebarWidth]);
+  }, [leftSidebarWidth, rightSidebarWidth, isRightSidebarOpen]); // Dependencies ensure this effect re-runs when layout changes
 
   const generateId = (type: string): string => {
     const timestamp = Date.now();
@@ -133,14 +156,13 @@ function App() {
 
     const mesh = new THREE.Mesh(geometry, material);
 
-    // Apply a slight offset for new primitives so they don't spawn directly on top of each other
     const existingCount = objects.filter(obj => obj.id.startsWith(type)).length;
-    const offset = existingCount * 0.5; // Offset by 0.5 units for each new object of the same type
+    const offset = existingCount * 0.5;
 
     const newObject: RenderObject = {
       id: generateId(type),
       mesh,
-      position: new Vec3(offset, offset, offset), // Apply the offset here
+      position: new Vec3(offset, offset, offset),
       rotation: new Vec3(0, 0, 0),
       scale: new Vec3(1, 1, 1),
       color,
@@ -150,7 +172,7 @@ function App() {
 
     setObjects(prev => [...prev, newObject]);
     setSelectedObjectId(newObject.id);
-  }, [objects]); // Add objects to dependency array to get the latest count
+  }, [objects]);
 
   const handleFilesImported = useCallback((importedFiles: ImportedFile[]) => {
     const newObjects: RenderObject[] = [];
@@ -343,11 +365,11 @@ function App() {
     setObjects(prev => prev.map(obj =>
       obj.id === selectedObjectId
         ? {
-          ...obj,
-          position: new Vec3(0, 0, 0),
-          rotation: new Vec3(0, 0, 0),
-          scale: new Vec3(1, 1, 1)
-        }
+            ...obj,
+            position: new Vec3(0, 0, 0),
+            rotation: new Vec3(0, 0, 0),
+            scale: new Vec3(1, 1, 1) // Corrected from 'to' to 'scale'
+          }
         : obj
     ));
   }, [selectedObjectId]);
@@ -454,32 +476,18 @@ function App() {
     [selectedObjectId, objects]
   );
 
-  // --- Export Scene Function (Modified to apply transformations) ---
   const exportScene = useCallback((format: string) => {
     let data: string | null = null;
     let filename = '';
     let mimeType = '';
 
-    const sceneToExport = new THREE.Scene(); // Create a temporary scene for export
+    const sceneToExport = new THREE.Scene();
 
-    // Iterate over your RenderObject array and add cloned meshes with applied transformations
     objects.forEach(obj => {
-      // It's crucial to clone the mesh and apply the transformations from your state
-      // directly to this cloned mesh before adding it to the export scene.
       const meshClone = obj.mesh.clone();
-
-      // Apply position, rotation, and scale from your RenderObject state
       meshClone.position.set(obj.position.x, obj.position.y, obj.position.z);
       meshClone.rotation.set(obj.rotation.x, obj.rotation.y, obj.rotation.z);
       meshClone.scale.set(obj.scale.x, obj.scale.y, obj.scale.z);
-
-      // Important: If your Mesh materials are not cloning correctly, or if you want
-      // to ensure a flat shading or specific material properties in export,
-      // you might need to create a new simple material for the cloned mesh.
-      // For most cases, cloning the material should work if it's a standard Three.js material.
-      // If issues persist, consider:
-      // meshClone.material = new THREE.MeshPhongMaterial({ color: (obj.mesh.material as THREE.MeshPhongMaterial).color });
-
       sceneToExport.add(meshClone);
     });
 
@@ -512,14 +520,13 @@ function App() {
 
         case 'obj':
           const objExporter = new OBJExporter();
-          data = objExporter.parse(sceneToExport); // Pass the temporary scene with applied transformations
+          data = objExporter.parse(sceneToExport);
           filename = 'threejs-cad-scene.obj';
           mimeType = 'text/plain';
           break;
 
         case 'stl':
           const stlExporter = new STLExporter();
-          // STLExporter by default uses world coordinates. Passing the sceneToExport handles positions.
           data = stlExporter.parse(sceneToExport, { binary: false });
           filename = 'threejs-cad-scene.stl';
           mimeType = 'application/vnd.ms-pki.stl';
@@ -545,7 +552,7 @@ function App() {
       console.error(`Error exporting to ${format}:`, error);
       alert(`Failed to export scene to ${format}. Check console for details.`);
     }
-  }, [objects, lightSettings, gridSettings, measurements]); // Added objects to dependencies
+  }, [objects, lightSettings, gridSettings, measurements]);
 
   const handleMouseDownLeft = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -580,7 +587,7 @@ function App() {
   }, []);
 
   return (
-    <div className="min-h-screen overflow-y-auto bg-gray-900 text-white flex flex-col">
+    <div className="h-screen overflow-hidden bg-gray-900 text-white flex flex-col">
       <KeyboardShortcuts
         onTransformModeChange={setTransformMode}
         onDuplicate={duplicateSelected}
@@ -597,7 +604,7 @@ function App() {
               WebGL CAD Studio Pro
             </h1>
             <div className="text-sm text-gray-400">
-              Professional 3D modeling with advanced sketching
+              Professional 3D modeling with face selection & measurement
             </div>
             <div className="flex items-center gap-2 px-3 py-1 bg-green-900 bg-opacity-50 rounded-full">
               <div className="w-2 h-2 bg-green-400 rounded-full"></div>
@@ -607,6 +614,11 @@ function App() {
               <div className="flex items-center gap-2 px-3 py-1 bg-purple-900 bg-opacity-50 rounded-full">
                 <Layers size={12} />
                 <span className="text-xs text-purple-300">3D Sketch Mode</span>
+              </div>
+            )}
+            {activeTool === 'face-select' && (
+              <div className="flex items-center gap-2 px-3 py-1 bg-blue-900 bg-opacity-50 rounded-full">
+                <span className="text-xs text-blue-300">Face Selection Mode</span>
               </div>
             )}
           </div>
@@ -659,13 +671,23 @@ function App() {
               <Settings size={16} />
               Settings
             </button>
+            <button
+              onClick={() => setIsRightSidebarOpen(!isRightSidebarOpen)}
+              className="p-2 bg-gray-700 hover:bg-gray-600 rounded-lg transition-colors text-sm"
+              title={isRightSidebarOpen ? 'Minimize Right Panels' : 'Maximize Right Panels'}
+            >
+              {isRightSidebarOpen ? <PanelRightClose size={18} /> : <PanelRightOpen size={18} />}
+            </button>
           </div>
         </div>
       </header>
 
-      <div className="flex flex-1 overflow-hidden">
+      {/* Main content area: Left sidebar, Viewport, Right sidebar */}
+      {/* Added 'relative' to make it the positioning context for absolute children */}
+      <div ref={mainContentRef} className="flex-1 flex overflow-hidden relative">
+        {/* Left sidebar */}
         <div
-          className="border-r border-gray-700 bg-gray-800 flex-shrink-0"
+          className="border-r border-gray-700 bg-gray-800 flex-shrink-0 h-full overflow-y-auto"
           style={{ width: leftSidebarWidth }}
         >
           <Toolbar
@@ -685,13 +707,13 @@ function App() {
             sketchMode={sketchMode}
           />
         </div>
-
         <div
-          className="w-2 bg-gray-700 cursor-ew-resize hover:bg-gray-600 flex-shrink-0"
+          className="w-2 bg-gray-700 cursor-ew-resize hover:bg-gray-600 flex-shrink-0 h-full"
           onMouseDown={handleMouseDownLeft}
         />
 
-        <div ref={viewportRef} className="flex-1 relative">
+        {/* Viewport takes all available space */}
+        <div ref={viewportRef} className="flex-1 relative h-full">
           <Viewport3D
             objects={objects}
             selectedObjectId={selectedObjectId}
@@ -710,65 +732,140 @@ function App() {
             onSketchSettingsChange={handleSketchSettingsChange}
             viewportWidth={viewportDimensions.width}
             viewportHeight={viewportDimensions.height}
+            activeTool={activeTool}
           />
         </div>
 
-        <div
-          className="w-2 bg-gray-700 cursor-ew-resize hover:bg-gray-600 flex-shrink-0"
-          onMouseDown={handleMouseDownRight}
-        />
+        {/* Right resizer - only visible if sidebar is OPEN */}
+        {isRightSidebarOpen && (
+          <div
+            className="w-2 bg-gray-700 cursor-ew-resize hover:bg-gray-600 flex-shrink-0 h-full"
+            onMouseDown={handleMouseDownRight}
+          />
+        )}
 
+        {/* Right sidebar container */}
         <div
-          className="border-l border-gray-700 flex flex-col flex-shrink-0"
-          style={{ width: rightSidebarWidth }}
+          className={`border-l border-gray-700 flex flex-col bg-gray-800 transition-all duration-300 ease-in-out ${
+            isRightSidebarOpen
+              ? 'flex-shrink-0 h-full' // When open, behaves as a flex item and takes up space
+              : 'absolute top-0 right-0 h-full z-50 group overflow-hidden' // When minimized, absolute, takes no flex space
+          }`}
+          style={{ width: isRightSidebarOpen ? rightSidebarWidth : '50px' }}
         >
-          {measurementPanelOpen && (
-            <div className="h-1/2 border-b border-gray-700">
-              <MeasurementPanel
-                measurements={measurements}
-                activeTool={measurementEngine.getActiveTool()}
-                onToolChange={handleMeasurementToolChange}
-                onDeleteMeasurement={handleDeleteMeasurement}
-                onClearAll={handleClearMeasurements}
-                tempPoints={measurementEngine.getTempPoints().length}
-              />
+          {isRightSidebarOpen ? (
+            /* Full Sidebar Content when Open */
+            <div className="flex-1 overflow-y-auto h-full">
+              <CollapsiblePanel
+                title="Measurement"
+                isOpen={measurementPanelOpen}
+                onToggle={() => setMeasurementPanelOpen(!measurementPanelOpen)}
+                minimizedIcon={<Ruler size={18} className="text-gray-400" />}
+              >
+                <MeasurementPanel
+                  measurements={measurements}
+                  activeTool={measurementEngine.getActiveTool()}
+                  onToolChange={handleMeasurementToolChange}
+                  onDeleteMeasurement={handleDeleteMeasurement}
+                  onClearAll={handleClearMeasurements}
+                  tempPoints={measurementEngine.getTempPoints().length}
+                />
+              </CollapsiblePanel>
+
+              <CollapsiblePanel
+                title="Lighting"
+                isOpen={lightingPanelOpen}
+                onToggle={() => setLightingPanelOpen(!lightingPanelOpen)}
+                minimizedIcon={<Lightbulb size={18} className="text-gray-400" />}
+              >
+                <LightingPanel
+                  settings={lightSettings}
+                  onSettingsChange={setLightSettings}
+                />
+              </CollapsiblePanel>
+
+              <CollapsiblePanel
+                title="Grid"
+                isOpen={gridPanelOpen}
+                onToggle={() => setGridPanelOpen(!gridPanelOpen)}
+                minimizedIcon={<Grid size={18} className="text-gray-400" />}
+              >
+                <GridPanel
+                  settings={gridSettings}
+                  onSettingsChange={setGridSettings}
+                />
+              </CollapsiblePanel>
+
+              <CollapsiblePanel
+                title="Scene Hierarchy"
+                isOpen={sceneHierarchyOpen}
+                onToggle={() => setSceneHierarchyOpen(!sceneHierarchyOpen)}
+                minimizedIcon={<Layers size={18} className="text-gray-400" />}
+              >
+                <SceneHierarchy
+                  objects={objects}
+                  selectedObjectId={selectedObjectId}
+                  onObjectSelect={selectObject}
+                  onObjectVisibilityToggle={handleObjectVisibilityToggle}
+                />
+              </CollapsiblePanel>
+              <CollapsiblePanel
+                title="Properties"
+                isOpen={propertiesPanelOpen}
+                onToggle={() => setPropertiesPanelOpen(!propertiesPanelOpen)}
+                minimizedIcon={<ClipboardList size={18} className="text-gray-400" />}
+              >
+                <PropertiesPanel
+                  selectedObject={selectedObject}
+                  onObjectUpdate={updateObject}
+                />
+              </CollapsiblePanel>
+            </div>
+          ) : (
+            /* Minimized Sidebar Content (Icons + Hover Expand) */
+            <div className="flex flex-col items-center gap-4 py-4 w-full h-full transition-all duration-300 ease-in-out group-hover:w-[320px] group-hover:items-start group-hover:pl-4 group-hover:pr-2 group-hover:bg-gray-700">
+              <button
+                onClick={() => { setIsRightSidebarOpen(true); setMeasurementPanelOpen(!measurementPanelOpen); }}
+                className="p-2 rounded-lg hover:bg-gray-600 text-gray-400 relative group-hover:w-full group-hover:flex group-hover:items-center group-hover:justify-start"
+                title="Measurement"
+              >
+                <Ruler size={18} />
+                <span className="hidden group-hover:inline-block ml-2 text-sm text-gray-200">Measurement</span>
+              </button>
+              <button
+                onClick={() => { setIsRightSidebarOpen(true); setLightingPanelOpen(!lightingPanelOpen); }}
+                className="p-2 rounded-lg hover:bg-gray-600 text-gray-400 relative group-hover:w-full group-hover:flex group-hover:items-center group-hover:justify-start"
+                title="Lighting"
+              >
+                <Lightbulb size={18} />
+                <span className="hidden group-hover:inline-block ml-2 text-sm text-gray-200">Lighting</span>
+              </button>
+              <button
+                onClick={() => { setIsRightSidebarOpen(true); setGridPanelOpen(!gridPanelOpen); }}
+                className="p-2 rounded-lg hover:bg-gray-600 text-gray-400 relative group-hover:w-full group-hover:flex group-hover:items-center group-hover:justify-start"
+                title="Grid"
+              >
+                <Grid size={18} />
+                <span className="hidden group-hover:inline-block ml-2 text-sm text-gray-200">Grid</span>
+              </button>
+              <button
+                onClick={() => { setIsRightSidebarOpen(true); setSceneHierarchyOpen(!sceneHierarchyOpen); }}
+                className="p-2 rounded-lg hover:bg-gray-600 text-gray-400 relative group-hover:w-full group-hover:flex group-hover:items-center group-hover:justify-start"
+                title="Scene Hierarchy"
+              >
+                <Layers size={18} />
+                <span className="hidden group-hover:inline-block ml-2 text-sm text-gray-200">Scene Hierarchy</span>
+              </button>
+              <button
+                onClick={() => { setIsRightSidebarOpen(true); setPropertiesPanelOpen(!propertiesPanelOpen); }}
+                className="p-2 rounded-lg hover:bg-gray-600 text-gray-400 relative group-hover:w-full group-hover:flex group-hover:items-center group-hover:justify-start"
+                title="Properties"
+              >
+                <ClipboardList size={18} />
+                <span className="hidden group-hover:inline-block ml-2 text-sm text-gray-200">Properties</span>
+              </button>
             </div>
           )}
-
-          {lightingPanelOpen && (
-            <div className="h-1/2 border-b border-gray-700">
-              <LightingPanel
-                settings={lightSettings}
-                onSettingsChange={setLightSettings}
-              />
-            </div>
-          )}
-
-          {gridPanelOpen && (
-            <div className="h-1/2 border-b border-gray-700">
-              <GridPanel
-                settings={gridSettings}
-                onSettingsChange={setGridSettings}
-              />
-            </div>
-          )}
-
-          <div className={`${measurementPanelOpen || lightingPanelOpen || gridPanelOpen ? 'h-1/2' : 'h-1/2'} border-b border-gray-700 overflow-y-auto`}>
-
-            <SceneHierarchy
-              objects={objects}
-              selectedObjectId={selectedObjectId}
-              onObjectSelect={selectObject}
-              onObjectVisibilityToggle={handleObjectVisibilityToggle}
-            />
-          </div>
-
-          <div className={`${measurementPanelOpen || lightingPanelOpen || gridPanelOpen ? 'h-1/2' : 'h-1/2'} overflow-y-auto`}>
-            <PropertiesPanel
-              selectedObject={selectedObject}
-              onObjectUpdate={updateObject}
-            />
-          </div>
         </div>
       </div>
 
@@ -777,7 +874,7 @@ function App() {
         onClose={() => setFileImportOpen(false)}
         onFilesImported={handleFilesImported}
       />
-      {!sketchMode && (
+      {!sketchMode && activeTool !== 'face-select' && (
         <ContextToolbar
           selectedObjectId={selectedObjectId}
           transformMode={transformMode}
@@ -804,6 +901,7 @@ function App() {
             <span>Transform: {transformMode.toUpperCase()}</span>
             <span>Measurements: {measurements.length}</span>
             {sketchMode && <span className="text-purple-400 font-medium">3D SKETCH MODE</span>}
+            {activeTool === 'face-select' && <span className="text-blue-400 font-medium">FACE SELECTION MODE</span>}
           </div>
           <div className="flex items-center gap-4">
             <span>Grid: {gridSettings.visible ? 'On' : 'Off'}</span>
